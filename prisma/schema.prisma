@@ -7,82 +7,147 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model amenities {
-  amenity_id Int    @id @unique(map: "amenity_id_UNIQUE") @default(autoincrement())
-  name       String @unique(map: "name_UNIQUE") @db.VarChar(45)
-}
-
-/// The underlying table does not contain a valid unique identifier and can therefore currently not be handled by Prisma Client.
-model amenitiescamper {
-  camper_id  Int
-  amenity_id Int
-
-  @@ignore
-}
-
 model bookings {
-  booking_id       Int      @id @unique(map: "booking_id_UNIQUE") @default(autoincrement())
-  user_id          Int
-  camper_id        Int
-  start_date       DateTime @db.DateTime(0)
-  end_date         DateTime @db.DateTime(0)
-  status_id        Int
-  created_at       DateTime @db.DateTime(0)
-  number_of_guests Int
-  cost             Decimal  @db.Decimal(10, 2)
-}
+  booking_id                 Int                        @id @unique(map: "booking_id_UNIQUE")
+  user_id                    Int
+  camper_id                  Int
+  start_date                 DateTime                   @db.Date
+  end_date                   DateTime                   @db.Date
+  status_id                  Int
+  number_of_guests           Int
+  cost                       Decimal                    @db.Decimal(10, 2)
+  created_at                 DateTime                   @db.Date
+  review                     review                     @relation(fields: [booking_id], references: [booking_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_booking_review")
+  status_booking_transaction status_booking_transaction @relation(fields: [status_id], references: [status_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_booking_status")
+  camping_spot               camping_spot               @relation(fields: [camper_id], references: [camping_spot_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_bookings_campers")
+  users                      users                      @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_bookins_users")
+  transaction                transaction[]
 
-model campers {
-  camper_id       Int      @id @unique(map: "camper_id_UNIQUE") @default(autoincrement())
-  owner_id        Int      @unique(map: "owner_id_UNIQUE")
-  title           String   @db.VarChar(45)
-  description     String   @db.VarChar(45)
-  max_guests      Int
-  price_per_night Decimal  @db.Decimal(10, 2)
-  created_at      DateTime @db.DateTime(0)
+  @@index([status_id], map: "FK_booking_status_idx")
+  @@index([camper_id], map: "FK_bookings_campers_idx")
+  @@index([user_id], map: "FK_bookins_users_idx")
 }
 
 model images {
-  image_id   Int      @id @unique(map: "image_id_UNIQUE") @default(autoincrement())
-  camper_id  Int
-  image_url  String   @db.VarChar(255)
-  created_at DateTime @db.DateTime(0)
-}
+  image_id     Int          @id @unique(map: "image_id_UNIQUE") @default(autoincrement())
+  camping_id   Int
+  image_url    String       @db.VarChar(45)
+  created_at   DateTime     @db.Date
+  camping_spot camping_spot @relation(fields: [camping_id], references: [camping_spot_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_images_campings")
 
-model locations {
-  location_id    Int     @id @unique(map: "location_id_UNIQUE") @default(autoincrement())
-  camper_id      Int     @unique(map: "camper_id_UNIQUE")
-  address_line1  String  @db.VarChar(45)
-  adddress_line2 String  @db.VarChar(45)
-  city           String  @db.VarChar(45)
-  country        String  @db.VarChar(45)
-  postal_code    String? @db.VarChar(45)
-}
-
-model reviews {
-  review_id  Int      @id @unique(map: "review_id_UNIQUE") @default(autoincrement())
-  booking_id Int      @unique(map: "booking_id_UNIQUE")
-  user_id    Int
-  rating     Int
-  comment    String?  @db.VarChar(255)
-  created_at DateTime @db.DateTime(0)
-}
-
-model transactions {
-  id         Int     @id @unique(map: "id_UNIQUE") @default(autoincrement())
-  amount     Decimal @db.Decimal(10, 2)
-  status_id  Int
-  booking_id String  @unique(map: "booking_id_UNIQUE") @db.VarChar(45)
+  @@index([camping_id], map: "FK_images_campings_idx")
 }
 
 model users {
-  user_id       Int      @id @unique(map: "user_id_UNIQUE") @default(autoincrement())
-  full_name     String   @db.VarChar(45)
-  email         String   @unique(map: "email_UNIQUE") @db.VarChar(45)
-  password_hash String   @db.VarChar(45)
-  phone         String?  @unique(map: "phone_UNIQUE") @db.VarChar(45)
-  date_of_birth String   @db.VarChar(45)
-  country       String?  @db.VarChar(45)
-  verified      String   @db.VarChar(45)
-  created_at    DateTime @db.DateTime(0)
+  user_id       Int        @id @default(autoincrement())
+  full_name     String     @db.VarChar(45)
+  email         String     @unique(map: "email_UNIQUE") @db.VarChar(45)
+  password_hash String     @unique(map: "password_hash_UNIQUE") @db.VarChar(45)
+  phone_number  String?    @db.VarChar(45)
+  date_of_birth String     @db.VarChar(45)
+  location_id   Int
+  verified      String     @db.VarChar(45)
+  isOwner       String?    @db.VarChar(1)
+  created_at    DateTime   @db.Date
+  bookings      bookings[]
+  owner         owner      @relation(fields: [user_id], references: [owner_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_user_owner")
+}
+
+model camping_spot {
+  camping_spot_id        Int                      @id @unique(map: "camping_spot_id_UNIQUE") @default(autoincrement())
+  owner_id               Int
+  title                  String                   @db.VarChar(45)
+  description            String                   @db.VarChar(45)
+  max_guests             Int
+  price_per_night        Decimal                  @db.Decimal(10, 2)
+  location_id            Int
+  created_at             DateTime                 @db.DateTime(0)
+  updated_at             DateTime                 @db.DateTime(0)
+  bookings               bookings[]
+  locations              location                 @relation(fields: [location_id], references: [location_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_campers_location")
+  owner                  owner                    @relation(fields: [owner_id], references: [owner_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_campers_owners")
+  camping_spot_amenities camping_spot_amenities[]
+  images                 images[]
+
+  @@index([owner_id], map: "FK_camping_owner_idx")
+  @@index([location_id], map: "FK_campings_location_idx")
+}
+
+model camping_spot_amenities {
+  camping_spot_id Int
+  amenity_id      Int
+  camping_spot    camping_spot @relation(fields: [camping_spot_id], references: [camping_spot_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_campings_to_images")
+  amenity         amenity      @relation(fields: [amenity_id], references: [amenity_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_images_to_campings")
+
+  @@id([camping_spot_id, amenity_id])
+  @@index([amenity_id], map: "FK_images_to_campings_idx")
+}
+
+model country {
+  country_id Int        @id @unique(map: "country_id_UNIQUE") @default(autoincrement())
+  name       String     @db.VarChar(45)
+  location   location[]
+}
+
+model owner {
+  owner_id     Int            @id @unique(map: "owner_id_UNIQUE")
+  license      String         @db.VarChar(45)
+  camping_spot camping_spot[]
+  users        users?
+}
+
+model amenity {
+  amenity_id             Int                      @id @unique(map: "amenity_id_UNIQUE") @default(autoincrement())
+  name                   String                   @db.VarChar(45)
+  camping_spot_amenities camping_spot_amenities[]
+}
+
+model location {
+  location_id   Int            @id @unique(map: "location_id_UNIQUE") @default(autoincrement())
+  address_line1 String         @db.VarChar(45)
+  address_line2 String?        @db.VarChar(45)
+  city          String         @db.VarChar(45)
+  country_id    Int
+  postal_code   String         @db.VarChar(45)
+  longtitute    String         @db.VarChar(45)
+  latitute      String         @db.VarChar(45)
+  camping_spot  camping_spot[]
+  country       country        @relation(fields: [country_id], references: [country_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_location_country")
+
+  @@index([country_id], map: "FK_location_country_idx")
+}
+
+model review {
+  review_id  Int       @id @unique(map: "review_id_UNIQUE") @default(autoincrement())
+  booking_id Int       @unique(map: "booking_id_UNIQUE")
+  user_id    Int
+  rating     Int
+  comment    String?   @db.VarChar(45)
+  created_at DateTime  @db.Date
+  bookings   bookings?
+}
+
+model status_booking_transaction {
+  status_id   Int                               @id @unique(map: "status_id_UNIQUE") @default(autoincrement())
+  status      status_booking_transaction_status
+  bookings    bookings[]
+  transaction transaction[]
+}
+
+model transaction {
+  transaction_id             Int                        @id @unique(map: "transaction_id_UNIQUE") @default(autoincrement())
+  amount                     Decimal                    @db.Decimal(10, 2)
+  status_id                  Int
+  booking_id                 Int
+  bookings                   bookings                   @relation(fields: [booking_id], references: [booking_id], onDelete: NoAction, onUpdate: NoAction, map: "FK_transaction_booking")
+  status_booking_transaction status_booking_transaction @relation(fields: [status_id], references: [status_id], onDelete: NoAction, onUpdate: NoAction, map: "Fk_transaction_status")
+
+  @@index([booking_id], map: "FK_transaction_booking_idx")
+  @@index([status_id], map: "Fk_transaction_status_idx")
+}
+
+enum status_booking_transaction_status {
+  declined
+  processing
+  accepted
 }
