@@ -2,249 +2,458 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const { geocodeAddress } = require('../utils/geocoding');
+const cloudinary = require('../utils/cloudinary');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
-/* GET home page. */
-router.get("/", async (req, res) => {
+// Get camping spots with filters
+router.get('/', async (req, res) => {
+  const { startDate, endDate, ...filters } = req.query;
+
+  // Validate required date parameters
+  if (!startDate || !endDate) {
+    return res.status(400).json({ 
+      error: 'Start date and end date are required',
+      message: 'Please provide both startDate and endDate to check availability'
+    });
+  }
+
   try {
-    const { startDate, endDate, city, country } = req.query;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({ error: "Missing startDate or endDate" });
+    // First check if dates are valid
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format' });
     }
 
-    // Build filter dynamically
-    const locationFilter = {};
-    if (city) {
-      locationFilter.city = city;
-    }
-    if (country) {
-      locationFilter.country = {
-        name: country,
-      };
-    }
-
-    const whereClause = {};
-    if (Object.keys(locationFilter).length > 0) {
-      whereClause.locations = locationFilter; // ✅ corrected: use 'locations'
-    }
-
-    const campingSpots = await prisma.camping_spot.findMany({
-      where: whereClause,
-      include: {
-        locations: {
-          select: {
-            city: true,
-            longtitute: true,
-            latitute: true,
-            country: { select: { name: true } },
-          },
+    const spots = await prisma.camping_spot.findMany({
+      where: {
+        // Required date availability check
+        NOT: {
+          bookings: {
+            some: {
+              AND: [
+                { start_date: { lte: end } },
+                { end_date: { gte: start } }
+              ]
+            }
+          }
         },
-        images: {
-          select: { image_url: true },
-          take: 1,
-        },
+        // Optional filters
+        ...(filters.minPrice && { price_per_night: { gte: parseFloat(filters.minPrice) } }),
+        ...(filters.maxPrice && { price_per_night: { lte: parseFloat(filters.maxPrice) } }),
+        ...(filters.minGuests && { max_guests: { gte: parseInt(filters.minGuests) } }),
+        ...(filters.maxGuests && { max_guests: { lte: parseInt(filters.maxGuests) } }),
+        ...(filters.city || filters.country_id ? {
+          location: {
+            ...(filters.city && { city: { contains: filters.city, mode: 'insensitive' } }),
+            ...(filters.country_id && { country_id: parseInt(filters.country_id) })
+          }
+        } : {}),
+        ...(filters.amenities && {
+          camping_spot_amenities: {
+            some: {
+              amenity_id: {
+                in: filters.amenities.split(',').map(id => parseInt(id))
+              }
+            }
+          }
+        })
       },
+      include: {
+        images: true,
+        location: {
+          include: {
+            country: true
+          }
+        },
+        camping_spot_amenities: {
+          include: {
+            amenity: true
+          }
+        },
+        owner: true
+      }
     });
 
-    const availableCampingSpots = [];
-
-    for (const spot of campingSpots) {
-      const bookings = await prisma.bookings.findMany({
-        where: {
-          camper_id: spot.camping_spot_id,
-          OR: [
-            {
-              start_date: {
-                lte: new Date(endDate),
-              },
-              end_date: {
-                gte: new Date(startDate),
-              },
-            },
-          ],
-        },
-      });
-
-      if (bookings.length === 0) {
-        availableCampingSpots.push(spot);
-      }
-    }
-
-    res.json(availableCampingSpots.map(spot => ({
-      ...spot,
-      price_per_night: spot.price_per_night
-    })));
+    res.json(spots);
   } catch (error) {
-    console.error("Error fetching camping spots:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Search Error:', error);
+    res.status(500).json({ error: 'Failed to search camping spots' });
   }
 });
 
-
-
-  
-//! Post method to create camping spot
-router.post('/', async (req, res, next) => {
-    try {
-        // Extract data from the request body
-        const { title, description, max_guests, price_per_night, address, city, country_name, postal_code, longtitute, latitute, owner_id } = req.body;
-    
-        // Validate required fields
-        if (!title || !description || !max_guests || !price_per_night || !city || !country_name || !postal_code || !longtitute || !latitute || !owner_id) {
-          return res.status(400).json({ error: "All fields are required." });
+// Get camping spots for specific owner
+router.get('/my-spots', async (req, res) => {
+  try {
+    const spots = await prisma.camping_spot.findMany({
+      include: {
+        images: true,
+        location: {
+          include: {
+            country: true
+          }
+        },
+        camping_spot_amenities: {
+          include: {
+            amenity: true
+          }
         }
-    
-        // Step 1: Check if the country exists, if not, create it
-        let country = await prisma.country.findFirst({ where: { name: country_name } });
-        if (!country) {
-          country = await prisma.country.create({
-            data: { name: country_name },
-          });
-        }
-    
-        // Step 2: Check if the location exists, if not, create it
-        let location = await prisma.location.findFirst({
-          where: { address_line1: address, city: city, country_id: country.country_id },
-        });
-    
-        if (!location) {
-          location = await prisma.location.create({
-            data: {
-              address_line1: address,
-              city: city,
-              country_id: country.country_id, // Reference the existing/new country
-              postal_code: postal_code,
-              longtitute: longtitute,
-              latitute: latitute,
-            },
-          });
-        }
-    
-        // Step 3: Create a new camping spot
-        const newCampingSpot = await prisma.camping_spot.create({
-          data: {
-            title,
-            description,
-            max_guests,
-            price_per_night,
-            location_id: location.location_id, // Use existing/new location
-            owner_id,
-            created_at: new Date(),
-            updated_at: new Date(),
-          },
-        });
-    
-        res.status(201).json({ message: "Camping spot created!", campingSpot: newCampingSpot });
-      } catch (error) {
-        console.error("Error adding camping spot:", error);
-        res.status(500).json({ error: "Internal server error" });
       }
+    });
 
+    res.json(spots);
+  } catch (error) {
+    console.error('Owner Spots Error:', error);
+    res.status(500).json({ error: 'Failed to fetch owner camping spots' });
+  }
 });
 
+// Helper function to calculate occupancy rate
+function calculateOccupancyRate(bookings) {
+  const now = new Date();
+  const thisYear = now.getFullYear();
+  const daysInYear = 365;
+  
+  const bookedDays = bookings.reduce((total, booking) => {
+    const start = new Date(booking.start_date);
+    const end = new Date(booking.end_date);
+    if (start.getFullYear() === thisYear) {
+      const days = (end - start) / (1000 * 60 * 60 * 24);
+      return total + days;
+    }
+    return total;
+  }, 0);
 
-router.get('/:id', async (req, res) => {
+  return Math.round((bookedDays / daysInYear) * 100);
+}
+
+// Get all amenities
+router.get('/amenities', async (req, res) => {
+  try {
+    const amenities = await prisma.amenity.findMany({
+      orderBy: {
+        name: 'asc'
+      }
+    });
+    res.json(amenities);
+  } catch (error) {
+    console.error('Amenities Error:', error);
+    res.status(500).json({ error: 'Failed to fetch amenities' });
+  }
+});
+
+// Get all countries
+router.get('/countries', async (req, res) => {
+  try {
+    const countries = await prisma.country.findMany({
+      orderBy: {
+        name: 'asc'
+      }
+    });
+    res.json(countries);
+  } catch (error) {
+    console.error('Countries Error:', error);
+    res.status(500).json({ error: 'Failed to fetch countries' });
+  }
+});
+
+// Create new camping spot
+router.post('/', upload.array('images', 10), async (req, res) => {
+  console.log('Received request body:', req.body);
+  console.log('Received files:', req.files);
+
+  try {
+    const {
+      title,
+      description,
+      price_per_night,
+      max_guests,
+      owner_id,
+      location: locationStr,
+      amenities: amenitiesStr
+    } = req.body;
+
+    const location = typeof locationStr === 'string' ? JSON.parse(locationStr) : locationStr;
+    const amenities = typeof amenitiesStr === 'string' ? JSON.parse(amenitiesStr) : amenitiesStr;
+
+    // Upload images to Cloudinary first
+    const uploadedImages = [];
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          const base64String = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+          const result = await cloudinary.uploader.upload(base64String, {
+            folder: 'camping_spots',
+            resource_type: 'auto'
+          });
+          // Store URL with public_id appended as a query parameter
+          uploadedImages.push({
+            image_url: `${result.secure_url}#${result.public_id}`
+          });
+        } catch (uploadError) {
+          console.error('Image upload error:', uploadError);
+          throw new Error('Failed to upload image to Cloudinary');
+        }
+      }
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Create location first
+      const newLocation = await tx.location.create({
+        data: {
+          address_line1: location.address_line1,
+          address_line2: location.address_line2 || '',
+          city: location.city,
+          country_id: parseInt(location.country_id),
+          postal_code: location.postal_code,
+          longtitute: '0', // You might want to add proper coordinates
+          latitute: '0'
+        }
+      });
+
+      // Create camping spot with location and images
+      const newSpot = await tx.camping_spot.create({
+        data: {
+          title,
+          description,
+          max_guests: parseInt(max_guests),
+          price_per_night: parseFloat(price_per_night),
+          owner_id: parseInt(owner_id),
+          location_id: newLocation.location_id,
+          created_at: new Date(),
+          updated_at: new Date(),
+          camping_spot_amenities: {
+            create: amenities.map(amenity_id => ({
+              amenity: {
+                connect: { amenity_id: parseInt(amenity_id) }
+              }
+            }))
+          },
+          images: {
+            create: uploadedImages.map(img => ({
+              image_url: img.image_url,
+              created_at: new Date()
+            }))
+          }
+        },
+        include: {
+          camping_spot_amenities: {
+            include: { amenity: true }
+          },
+          images: true,
+          location: true
+        }
+      });
+
+      return newSpot;
+    });
+
+    res.status(201).json(result);
+  } catch (error) {
+    console.error('Create Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to create camping spot',
+      details: error.message 
+    });
+  }
+});
+
+// Update camping spot
+router.put('/:id', upload.array('images', 10), async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log('Update request for spot:', id);
+    console.log('Request body:', req.body);
+    
+    const {
+      title,
+      description,
+      max_guests,
+      price_per_night,
+      location: locationStr,
+      amenities: amenitiesStr,
+      existing_images: existingImagesStr
+    } = req.body;
+
+    const location = JSON.parse(locationStr);
+    const amenities = JSON.parse(amenitiesStr);
+    const existingImages = JSON.parse(existingImagesStr || '[]');
+
+    // Upload new images to Cloudinary
+    const uploadedImages = [];
+    if (req.files && req.files.length > 0) {
+      for (const file of req.files) {
+        try {
+          const base64String = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+          const result = await cloudinary.uploader.upload(base64String, {
+            folder: 'camping_spots',
+            resource_type: 'auto'
+          });
+          uploadedImages.push({
+            image_url: result.secure_url,
+            created_at: new Date()
+          });
+        } catch (uploadError) {
+          console.error('Image upload error:', uploadError);
+          throw new Error('Failed to upload image to Cloudinary');
+        }
+      }
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Update location
+      if (location.location_id) {
+        await tx.location.update({
+          where: { location_id: parseInt(location.location_id) },
+          data: {
+            address_line1: location.address_line1,
+            address_line2: location.address_line2 || '',
+            city: location.city,
+            country_id: parseInt(location.country_id),
+            postal_code: location.postal_code
+          }
+        });
+      }
+
+      // Update amenities
+      await tx.camping_spot_amenities.deleteMany({
+        where: { camping_spot_id: parseInt(id) }
+      });
+
+      if (amenities?.length > 0) {
+        await tx.camping_spot_amenities.createMany({
+          data: amenities.map(amenityId => ({
+            camping_spot_id: parseInt(id),
+            amenity_id: parseInt(amenityId)
+          }))
+        });
+      }
+
+      // Handle images
+      if (existingImages.length === 0) {
+        // If no existing images are specified, delete all current images
+        await tx.images.deleteMany({
+          where: { camping_id: parseInt(id) }
+        });
+      } else {
+        // Delete only images that aren't in existingImages
+        await tx.images.deleteMany({
+          where: {
+            AND: [
+              { camping_id: parseInt(id) },
+              { image_id: { notIn: existingImages.map(imgId => parseInt(imgId)) } }
+            ]
+          }
+        });
+      }
+
+      // Add new images
+      if (uploadedImages.length > 0) {
+        await tx.images.createMany({
+          data: uploadedImages.map(img => ({
+            camping_id: parseInt(id),
+            image_url: img.image_url,
+            created_at: img.created_at
+          }))
+        });
+      }
+
+      // Update camping spot
+      return await tx.camping_spot.update({
+        where: { camping_spot_id: parseInt(id) },
+        data: {
+          title,
+          description,
+          max_guests: parseInt(max_guests),
+          price_per_night: parseFloat(price_per_night),
+          updated_at: new Date()
+        },
+        include: {
+          camping_spot_amenities: {
+            include: { amenity: true }
+          },
+          images: true,
+          location: {
+            include: {
+              country: true
+            }
+          }
+        }
+      });
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Update Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update camping spot',
+      details: error.message,
+      stack: error.stack 
+    });
+  }
+});
+
+// Delete camping spot
+router.delete('/:id', async (req, res) => {
   const { id } = req.params;
 
   try {
-    const spot = await prisma.camping_spot.findUnique({
-      where: {
-        camping_spot_id: Number(id),
-      },
-      include: {
-        locations: {
-          select: {
-            city: true,
-            latitute: true,
-            longtitute: true,
-            country: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        },
-        images: {
-          select: {
-            image_url: true,
-          },
-        },
-        bookings: {
-          select: {
-            start_date: true,
-            end_date: true,
-            review: {
-              select: {
-                rating: true,
-                comment: true,
-                created_at: true,
-              },
-            },
-            users: {
-              select: {
-                full_name: true,
-              },
-            },
-          },
-        },
-        camping_spot_amenities: {
-          select: {
-            amenity: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        },
-      },
+    await prisma.$transaction(async (tx) => {
+      // Delete related records first
+      await tx.camping_spot_amenities.deleteMany({
+        where: { camping_spot_id: parseInt(id) }
+      });
+
+      await tx.images.deleteMany({
+        where: { camping_id: parseInt(id) }
+      });
+
+      // Delete the camping spot
+      await tx.camping_spot.delete({
+        where: { camping_spot_id: parseInt(id) }
+      });
     });
 
-    if (!spot) {
-      return res.status(404).json({ error: 'Camping spot not found' });
-    }
-
-    // 📦 Flatten amenities
-    const amenities = spot.camping_spot_amenities.map(a => a.amenity.name);
-
-    // 📦 Extract public reviews only
-    const reviews = spot.bookings
-      .filter(b => b.review !== null)
-      .map(b => ({
-        rating: b.review.rating,
-        comment: b.review.comment,
-        date: b.review.created_at,
-        reviewer: b.users.full_name,
-      }));
-
-    // 📦 Only extract availability data (no user info)
-    const unavailableDates = spot.bookings.map(b => ({
-      start_date: b.start_date,
-      end_date: b.end_date,
-    }));
-
-    // ✅ Construct final clean response
-    const formattedSpot = {
-      camping_spot_id: spot.camping_spot_id,
-      title: spot.title,
-      description: spot.description,
-      max_guests: spot.max_guests,
-      price_per_night: spot.price_per_night,
-      locations: spot.locations,
-      images: spot.images,
-      amenities,
-      reviews,
-      unavailableDates,
-    };
-
-    res.json(formattedSpot);
+    res.json({ message: 'Camping spot deleted successfully' });
   } catch (error) {
-    console.error('Error fetching camping spot by ID:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Delete Error:', error);
+    res.status(500).json({ error: 'Failed to delete camping spot' });
   }
 });
 
+// Delete specific image
+router.delete('/images/:id', async (req, res) => {
+  const { id } = req.params;
 
+  try {
+    const image = await prisma.images.findUnique({
+      where: { image_id: parseInt(id) }
+    });
 
+    if (image) {
+      // Extract public_id from the image URL
+      const publicId = image.image_url.split('#').pop();
+      if (publicId) {
+        try {
+          await cloudinary.uploader.destroy(publicId);
+        } catch (cloudinaryError) {
+          console.error('Cloudinary delete error:', cloudinaryError);
+        }
+      }
 
+      await prisma.images.delete({
+        where: { image_id: parseInt(id) }
+      });
+    }
 
-module.exports = router;``
+    res.json({ message: 'Image deleted successfully' });
+  } catch (error) {
+    console.error('Delete Image Error:', error);
+    res.status(500).json({ error: 'Failed to delete image' });
+  }
+});
+
+module.exports = router;
