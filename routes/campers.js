@@ -2,25 +2,22 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const { geocodeAddress } = require('../utils/geocoding');
+const { geocodeAddress, calculateDistance } = require('../utils/geocoding');
 const cloudinary = require('../utils/cloudinary');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Get camping spots with filters
 router.get('/', async (req, res) => {
-  const { startDate, endDate, ...filters } = req.query;
+  const { startDate, endDate, lat, lng, radius = 50, ...filters } = req.query;
 
-  // Validate required date parameters
   if (!startDate || !endDate) {
     return res.status(400).json({ 
-      error: 'Start date and end date are required',
-      message: 'Please provide both startDate and endDate to check availability'
+      error: 'Start date and end date are required'
     });
   }
 
   try {
-    // First check if dates are valid
     const start = new Date(startDate);
     const end = new Date(endDate);
     
@@ -28,9 +25,8 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'Invalid date format' });
     }
 
-    const spots = await prisma.camping_spot.findMany({
+    let query = {
       where: {
-        // Required date availability check
         NOT: {
           bookings: {
             some: {
@@ -40,43 +36,64 @@ router.get('/', async (req, res) => {
               ]
             }
           }
-        },
-        // Optional filters
-        ...(filters.minPrice && { price_per_night: { gte: parseFloat(filters.minPrice) } }),
-        ...(filters.maxPrice && { price_per_night: { lte: parseFloat(filters.maxPrice) } }),
-        ...(filters.minGuests && { max_guests: { gte: parseInt(filters.minGuests) } }),
-        ...(filters.maxGuests && { max_guests: { lte: parseInt(filters.maxGuests) } }),
-        ...(filters.city || filters.country_id ? {
-          location: {
-            ...(filters.city && { city: { contains: filters.city, mode: 'insensitive' } }),
-            ...(filters.country_id && { country_id: parseInt(filters.country_id) })
-          }
-        } : {}),
-        ...(filters.amenities && {
-          camping_spot_amenities: {
-            some: {
-              amenity_id: {
-                in: filters.amenities.split(',').map(id => parseInt(id))
-              }
-            }
-          }
-        })
+        }
       },
       include: {
         images: true,
         location: {
-          include: {
-            country: true
-          }
+          include: { country: true }
         },
         camping_spot_amenities: {
-          include: {
-            amenity: true
-          }
+          include: { amenity: true }
         },
         owner: true
       }
-    });
+    };
+
+    // Add price filters
+    if (filters.minPrice) {
+      query.where.price_per_night = { ...query.where.price_per_night, gte: parseFloat(filters.minPrice) };
+    }
+    if (filters.maxPrice) {
+      query.where.price_per_night = { ...query.where.price_per_night, lte: parseFloat(filters.maxPrice) };
+    }
+
+    // Add guests filter
+    if (filters.guests) {
+      query.where.max_guests = { gte: parseInt(filters.guests) };
+    }
+
+    // Add amenities filter
+    if (filters.amenities) {
+      query.where.camping_spot_amenities = {
+        some: {
+          amenity_id: {
+            in: filters.amenities.split(',').map(id => parseInt(id))
+          }
+        }
+      };
+    }
+
+    let spots = await prisma.camping_spot.findMany(query);
+
+    // Filter by distance if coordinates provided
+    if (lat && lng) {
+      const targetLat = parseFloat(lat);
+      const targetLng = parseFloat(lng);
+      const maxDistance = parseFloat(radius);
+
+      spots = spots.filter(spot => {
+        if (!spot.location?.latitute || !spot.location?.longtitute) return false;
+        
+        const distance = calculateDistance(
+          targetLat,
+          targetLng,
+          parseFloat(spot.location.latitute),
+          parseFloat(spot.location.longtitute)
+        );
+        return distance <= maxDistance;
+      });
+    }
 
     res.json(spots);
   } catch (error) {
@@ -453,6 +470,66 @@ router.delete('/images/:id', async (req, res) => {
   } catch (error) {
     console.error('Delete Image Error:', error);
     res.status(500).json({ error: 'Failed to delete image' });
+  }
+});
+
+// Get single camping spot by ID
+router.get('/:id', async (req, res) => {
+  const { id } = req.params;
+  const { startDate, endDate } = req.query;
+
+  try {
+    // Validate dates if provided
+    if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+    }
+
+    // Find the camping spot without owner details
+    const spot = await prisma.camping_spot.findUnique({
+      where: {
+        camping_spot_id: parseInt(id)
+      },
+      include: {
+        images: true,
+        location: {
+          include: {
+            country: true
+          }
+        },
+        camping_spot_amenities: {
+          include: {
+            amenity: true
+          }
+        },
+        bookings: {
+          include: {
+            review: true
+          }
+        }
+      }
+    });
+
+    if (!spot) {
+      return res.status(404).json({ error: 'Camping spot not found' });
+    }
+
+    // Add reviews data from bookings
+    spot.reviews = spot.bookings
+      .filter(booking => booking.review)
+      .map(booking => booking.review);
+
+    // Remove bookings from response if not needed
+    delete spot.bookings;
+
+    res.json(spot);
+  } catch (error) {
+    console.error('Get Single Spot Error:', error);
+    res.status(500).json({ error: 'Failed to fetch camping spot', details: error.message });
   }
 });
 
