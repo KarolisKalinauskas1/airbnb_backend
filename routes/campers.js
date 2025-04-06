@@ -32,7 +32,8 @@ router.get('/', async (req, res) => {
             some: {
               AND: [
                 { start_date: { lte: end } },
-                { end_date: { gte: start } }
+                { end_date: { gte: start } },
+                { status_id: { not: 3 } }  // Exclude cancelled bookings (status_id 3)
               ]
             }
           }
@@ -105,6 +106,11 @@ router.get('/', async (req, res) => {
 // Get camping spots for specific owner
 router.get('/my-spots', async (req, res) => {
   try {
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    const daysInMonth = lastDayOfMonth.getDate();
+
     const spots = await prisma.camping_spot.findMany({
       include: {
         images: true,
@@ -117,11 +123,51 @@ router.get('/my-spots', async (req, res) => {
           include: {
             amenity: true
           }
+        },
+        bookings: {
+          where: {
+            status_id: {
+              in: [2, 4] // Only confirmed and completed bookings
+            }
+          },
+          select: {
+            start_date: true,
+            end_date: true,
+            cost: true,
+            status_id: true
+          }
         }
       }
     });
 
-    res.json(spots);
+    // Calculate stats for each spot
+    const spotsWithStats = spots.map(spot => {
+      const validBookings = spot.bookings;
+      const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost), 0);
+      
+      // Calculate occupied days in current month
+      const daysOccupiedThisMonth = validBookings.reduce((sum, b) => {
+        const start = new Date(Math.max(b.start_date, firstDayOfMonth));
+        const end = new Date(Math.min(b.end_date, lastDayOfMonth));
+        if (end > start) {
+          return sum + Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+        }
+        return sum;
+      }, 0);
+      
+      const stats = {
+        totalBookings: validBookings.length,
+        revenue: totalRevenue,
+        occupancyRate: Math.round((daysOccupiedThisMonth / daysInMonth) * 100)
+      };
+
+      return {
+        ...spot,
+        stats
+      };
+    });
+
+    res.json(spotsWithStats);
   } catch (error) {
     console.error('Owner Spots Error:', error);
     res.status(500).json({ error: 'Failed to fetch owner camping spots' });

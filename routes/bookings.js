@@ -4,109 +4,211 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
-// Create checkout session
-router.post('/create-checkout-session', async (req, res) => {
+// Create payment intent
+router.post('/create-payment-intent', async (req, res) => {
   try {
-    console.log('Received checkout request with body:', req.body);
+    const { amount } = req.body;
 
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100), // Convert to cents
+      currency: 'eur',
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    res.json({ clientSecret: paymentIntent.client_secret });
+  } catch (error) {
+    console.error('Payment intent error:', error);
+    res.status(500).json({ error: 'Failed to create payment intent' });
+  }
+});
+
+// Create booking after successful payment
+router.post('/confirm', async (req, res) => {
+  try {
+    const { 
+      camping_spot_id,
+      user_id,
+      start_date,
+      end_date,
+      number_of_guests,
+      total,
+      base_price
+    } = req.body;
+
+    const booking = await prisma.bookings.create({
+      data: {
+        camper_id: parseInt(camping_spot_id),
+        user_id: parseInt(user_id),
+        start_date: new Date(start_date),
+        end_date: new Date(end_date),
+        number_of_guests: parseInt(number_of_guests),
+        cost: parseFloat(base_price),
+        created_at: new Date(),
+        status_id: 2 // CONFIRMED
+      }
+    });
+
+    await prisma.transaction.create({
+      data: {
+        amount: parseFloat(total),
+        status_id: 2, // CONFIRMED
+        booking_id: booking.booking_id
+      }
+    });
+
+    res.status(201).json({ success: true, bookingId: booking.booking_id });
+  } catch (error) {
+    console.error('Booking creation error:', error);
+    res.status(500).json({ error: 'Failed to create booking' });
+  }
+});
+
+// Create booking
+router.post('/create', async (req, res) => {
+  try {
     const { 
       camping_spot_id,
       user_id, 
       start_date, 
       end_date, 
       number_of_guests,
-      phone_number,
-      total
+      total,          // Total with service fee
+      base_price      // Base price (price_per_night * nights)
     } = req.body;
 
     // Validate required fields
-    if (!camping_spot_id || !user_id || !start_date || !end_date || !total) {
-      console.log('Missing required fields:', { camping_spot_id, user_id, start_date, end_date, total });
+    if (!camping_spot_id || !user_id || !start_date || !end_date || !total || !base_price) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    console.log('Creating Stripe session with amount:', total);
-
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{
-        price_data: {
-          currency: 'eur',
-          product_data: {
-            name: 'Camping Spot Booking',
-            description: `Booking from ${start_date} to ${end_date}`,
-          },
-          unit_amount: Math.round(total * 100),
-        },
-        quantity: 1,
-      }],
-      mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/booking-success`,
-      cancel_url: `${process.env.FRONTEND_URL}/booking-failed`,
-      metadata: {
-        camping_spot_id,
-        user_id,
-        start_date,
-        end_date,
-        number_of_guests,
-        phone_number
+    const booking = await prisma.bookings.create({
+      data: {
+        camper_id: parseInt(camping_spot_id),
+        user_id: parseInt(user_id),
+        start_date: new Date(start_date),
+        end_date: new Date(end_date),
+        number_of_guests: parseInt(number_of_guests),
+        cost: parseFloat(base_price),  // Save base price without service fee
+        created_at: new Date(),
+        status_id: 2 // CONFIRMED
       }
     });
 
-    console.log('Stripe session created:', session.id);
-    res.json({ url: session.url });
-  } catch (error) {
-    console.error('Checkout session error:', error);
-    res.status(500).json({ 
-      error: 'Failed to create checkout session', 
-      details: error.message 
+    // Create transaction with total amount (including service fee)
+    await prisma.transaction.create({
+      data: {
+        amount: parseFloat(total),  // Save total with service fee
+        status_id: 2, // CONFIRMED
+        booking_id: booking.booking_id
+      }
     });
+
+    res.status(201).json({ 
+      success: true,
+      bookingId: booking.booking_id 
+    });
+  } catch (error) {
+    console.error('Booking creation error:', error);
+    res.status(500).json({ error: 'Failed to create booking' });
   }
 });
 
-// Handle successful payment
-router.get('/session/:sessionId', async (req, res) => {
+// Get booking details
+router.get('/:id', async (req, res) => {
   try {
-    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
-    
-    if (session.payment_status === 'paid') {
-      // Calculate amounts
-      const totalAmount = session.amount_total / 100; // Convert from cents
-      const serviceFee = totalAmount * 0.10; // 10% service fee
-      const ownerEarnings = totalAmount - serviceFee;
+    const booking = await prisma.bookings.findUnique({
+      where: { booking_id: parseInt(req.params.id) },
+      include: {
+        camping_spot: {
+          include: {
+            images: true,
+            location: {
+              include: {
+                country: true
+              }
+            }
+          }
+        },
+        status_booking_transaction: true, // Include status info
+        transaction: true
+      }
+    });
 
-      // Create booking with owner's earnings
-      const booking = await prisma.bookings.create({
-        data: {
-          camper_id: parseInt(session.metadata.camping_spot_id),
-          user_id: parseInt(session.metadata.user_id),
-          start_date: new Date(session.metadata.start_date),
-          end_date: new Date(session.metadata.end_date),
-          number_of_guests: parseInt(session.metadata.number_of_guests),
-          phone_number: session.metadata.phone_number,
-          cost: ownerEarnings, // Owner gets amount minus service fee
-          created_at: new Date(),
-          status_id: 1 // Confirmed status
-        }
-      });
-
-      // Create transaction record with full amount
-      await prisma.transaction.create({
-        data: {
-          amount: totalAmount, // Full amount including service fee
-          status_id: 1, // Confirmed status
-          booking_id: booking.booking_id,
-          created_at: new Date()
-        }
-      });
-      
-      res.json({ success: true, booking });
-    } else {
-      res.status(400).json({ error: 'Payment not completed' });
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
     }
+
+    res.json(booking);
   } catch (error) {
-    console.error('Session verification error:', error);
-    res.status(500).json({ error: 'Failed to verify payment' });
+    console.error('Get booking error:', error);
+    res.status(500).json({ error: 'Failed to get booking details' });
+  }
+});
+
+// Cancel booking
+router.post('/:id/cancel', async (req, res) => {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Update booking status to cancelled
+      const booking = await tx.bookings.update({
+        where: { booking_id: parseInt(req.params.id) },
+        data: { status_id: 3 }, // CANCELLED
+        include: {
+          transaction: true,
+          status_booking_transaction: true
+        }
+      });
+
+      // Create cancellation transaction record
+      await tx.transaction.create({
+        data: {
+          amount: 0,
+          status_id: 3, // CANCELLED
+          booking_id: booking.booking_id
+        }
+      });
+
+      return booking;
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Cancel booking error:', error);
+    res.status(500).json({ error: 'Failed to cancel booking' });
+  }
+});
+
+// Add auto-completion of bookings
+router.post('/complete-past-stays', async (req, res) => {
+  try {
+    const today = new Date();
+
+    // Find all CONFIRMED bookings that have ended
+    const pastBookings = await prisma.bookings.findMany({
+      where: {
+        status_id: 2, // CONFIRMED
+        end_date: {
+          lt: today
+        }
+      }
+    });
+
+    // Update their status to COMPLETED
+    const updates = await Promise.all(
+      pastBookings.map(booking =>
+        prisma.bookings.update({
+          where: { booking_id: booking.booking_id },
+          data: { status_id: 4 } // COMPLETED
+        })
+      )
+    );
+
+    res.json({ completed: updates.length });
+  } catch (error) {
+    console.error('Complete stays error:', error);
+    res.status(500).json({ error: 'Failed to complete past stays' });
   }
 });
 

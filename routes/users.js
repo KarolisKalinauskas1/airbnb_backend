@@ -139,6 +139,7 @@ router.get('/full-info', authenticate, async (req, res) => {
                 'cost', b.cost,
                 'number_of_guests', b.number_of_guests,
                 'created_at', b.created_at,
+                'status_id', b.status_id,  /* Add this line to include status_id */
                 'review', CASE
                   WHEN r.review_id IS NOT NULL THEN json_build_object(
                     'review_id', r.review_id,
@@ -150,9 +151,20 @@ router.get('/full-info', authenticate, async (req, res) => {
                 'camping_spot', CASE
                   WHEN cs.camping_spot_id IS NOT NULL THEN json_build_object(
                     'camping_spot_id', cs.camping_spot_id,
+                    'title', cs.title,  /* Add this line to include spot title */
                     'description', cs.description,
                     'max_guests', cs.max_guests,
-                    'price_per_night', cs.price_per_night
+                    'price_per_night', cs.price_per_night,
+                    'images', (
+                      SELECT json_agg(
+                        json_build_object(
+                          'image_id', i.image_id,
+                          'image_url', i.image_url
+                        )
+                      )
+                      FROM images i
+                      WHERE i.camping_id = cs.camping_spot_id
+                    )
                   )
                   ELSE NULL
                 END,
