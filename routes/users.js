@@ -188,4 +188,22 @@ router.get('/full-info', authenticate, async (req, res) => {
   }
 });
 
+// Update user phone number
+router.patch('/:id', async (req, res) => {
+  const { id } = req.params;
+  const { phone_number } = req.body;
+
+  try {
+    const updatedUser = await prisma.public_users.update({
+      where: { user_id: parseInt(id) },
+      data: { phone_number }
+    });
+
+    res.json(updatedUser);
+  } catch (error) {
+    console.error('Failed to update user:', error);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
 module.exports = router

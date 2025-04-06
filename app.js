@@ -5,6 +5,7 @@ const cookieParser = require('cookie-parser');
 const logger = require('morgan');
 const { PrismaClient } = require('@prisma/client');
 const cors = require('cors'); // Add this line
+const bodyParser = require('body-parser'); // Add this line
 
 const prisma = new PrismaClient();
 
@@ -13,15 +14,19 @@ const indexRouter = require('./routes/index');
 const campersRouter = require('./routes/campers');
 const userRouter = require('./routes/users')
 const dashboardRouter = require('./routes/dashboard');
+const bookingsRouter = require('./routes/bookings'); // Add this line
 
 const app = express();
+
+// Add this before other middleware
+app.use('/api/bookings/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // Add CORS middleware before other middleware
 app.use(cors({
   origin: 'http://localhost:5173', // Your frontend URL
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'stripe-signature']
 }));
 
 // view engine setup (using jade/pug, you can change if needed)
@@ -39,6 +44,7 @@ app.use('/', indexRouter);
 app.use('/camping-spots', campersRouter);
 app.use('/api/users', userRouter);
 app.use('/api/dashboard', dashboardRouter);
+app.use('/api/bookings', bookingsRouter); // Add this line
 
 // Catch 404 and forward to error handler
 app.use((req, res, next) => {

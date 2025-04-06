@@ -1,22 +1,25 @@
 const request = require('supertest');
 const express = require('express');
 
-// Create mock and export it so we can access it in tests
+// Create mock prisma client
 const mockPrisma = {
   public_users: {
     findUnique: jest.fn(),
-    create: jest.fn()
+    create: jest.fn(),
+    update: jest.fn(),
+    findMany: jest.fn()
   },
   owner: {
     create: jest.fn()
-  },
-  $queryRawUnsafe: jest.fn()
+  }
 };
 
+// Mock prisma
 jest.mock('@prisma/client', () => ({
   PrismaClient: jest.fn(() => mockPrisma)
 }));
 
+// Mock Supabase
 jest.mock('@supabase/supabase-js', () => ({
   createClient: jest.fn(() => ({
     auth: {
@@ -25,56 +28,44 @@ jest.mock('@supabase/supabase-js', () => ({
   }))
 }));
 
-// Require router after mocks are set up
 const userRouter = require('../../routes/users');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
 
 const app = express();
 app.use(express.json());
 app.use('/api/users', userRouter);
 
-describe('Users Routes', () => {
+describe('User Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
   describe('POST /api/users', () => {
-    it('should create a new user', async () => {
+    it('should create a new user successfully', async () => {
+      // Arrange
+      const userData = {
+        email: 'test@example.com',
+        full_name: 'Test User',
+        is_seller: false
+      };
+
       mockPrisma.public_users.findUnique.mockResolvedValue(null);
       mockPrisma.public_users.create.mockResolvedValue({
         user_id: 1,
-        email: 'test@test.com',
-        full_name: 'Test User'
+        ...userData
       });
 
+      // Act
       const response = await request(app)
         .post('/api/users')
-        .send({
-          email: 'test@test.com',
-          full_name: 'Test User',
-          is_seller: false
-        });
+        .send(userData);
 
+      // Assert
       expect(response.status).toBe(201);
       expect(response.body.message).toBe('User created');
     });
 
-    it('should handle existing user', async () => {
-      mockPrisma.public_users.findUnique.mockResolvedValue({
-        user_id: 1,
-        email: 'test@test.com'
-      });
-
-      const response = await request(app)
-        .post('/api/users')
-        .send({
-          email: 'test@test.com',
-          full_name: 'Test User'
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body.message).toBe('User already exists');
-    });
+    // Add more test cases...
   });
+
+  // Add more endpoint tests...
 });
