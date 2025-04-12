@@ -218,4 +218,22 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
+// Auth test endpoint
+router.get('/auth-test', authenticate, async (req, res) => {
+  try {
+    // If we get here, authentication succeeded
+    res.json({ 
+      status: 'success', 
+      message: 'Authentication working correctly',
+      user: {
+        id: req.supabaseUser.id,
+        email: req.supabaseUser.email
+      }
+    });
+  } catch (error) {
+    console.error('Auth test error:', error);
+    res.status(500).json({ error: 'Internal server error during auth test' });
+  }
+});
+
 module.exports = router

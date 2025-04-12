@@ -9,24 +9,25 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // Get camping spots with filters
 router.get('/', async (req, res) => {
-  const { startDate, endDate, lat, lng, radius = 50, ...filters } = req.query;
-
-  if (!startDate || !endDate) {
-    return res.status(400).json({ 
-      error: 'Start date and end date are required'
-    });
-  }
-
   try {
+    const filters = req.query;
+    
+    // Set default dates if not provided
+    const startDate = filters.startDate || new Date().toISOString().split('T')[0];
+    const endDate = filters.endDate || new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    
     const start = new Date(startDate);
     const end = new Date(endDate);
     
+    // Validate dates
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       return res.status(400).json({ error: 'Invalid date format' });
     }
-
-    let query = {
+    
+    // Build query with all the necessary WHERE conditions
+    const query = {
       where: {
+        // Only include spots that aren't booked for the selected dates
         NOT: {
           bookings: {
             some: {
@@ -78,10 +79,10 @@ router.get('/', async (req, res) => {
     let spots = await prisma.camping_spot.findMany(query);
 
     // Filter by distance if coordinates provided
-    if (lat && lng) {
-      const targetLat = parseFloat(lat);
-      const targetLng = parseFloat(lng);
-      const maxDistance = parseFloat(radius);
+    if (filters.lat && filters.lng) {
+      const targetLat = parseFloat(filters.lat);
+      const targetLng = parseFloat(filters.lng);
+      const maxDistance = parseFloat(filters.radius || 50);
 
       spots = spots.filter(spot => {
         if (!spot.location?.latitute || !spot.location?.longtitute) return false;
@@ -106,11 +107,6 @@ router.get('/', async (req, res) => {
 // Get camping spots for specific owner
 router.get('/my-spots', async (req, res) => {
   try {
-    const today = new Date();
-    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    const daysInMonth = lastDayOfMonth.getDate();
-
     const spots = await prisma.camping_spot.findMany({
       include: {
         images: true,
@@ -124,29 +120,26 @@ router.get('/my-spots', async (req, res) => {
             amenity: true
           }
         },
-        bookings: {
-          where: {
-            status_id: {
-              in: [2, 4] // Only confirmed and completed bookings
-            }
-          },
-          select: {
-            start_date: true,
-            end_date: true,
-            cost: true,
-            status_id: true
-          }
-        }
+        bookings: true
       }
     });
 
-    // Calculate stats for each spot
+    // Calculate some stats for each spot
+    const today = new Date();
+    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    const daysInMonth = lastDayOfMonth.getDate();
+
     const spotsWithStats = spots.map(spot => {
-      const validBookings = spot.bookings;
+      // Include status 2 (confirmed), 3 (cancelled), and 4 (completed) for revenue calculations
+      const validBookings = spot.bookings.filter(b => [2, 3, 4].includes(b.status_id));
       const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost), 0);
       
+      // For occupancy, only count non-cancelled bookings
+      const activeBookings = validBookings.filter(b => [2, 4].includes(b.status_id));
+      
       // Calculate occupied days in current month
-      const daysOccupiedThisMonth = validBookings.reduce((sum, b) => {
+      const daysOccupiedThisMonth = activeBookings.reduce((sum, b) => {
         const start = new Date(Math.max(b.start_date, firstDayOfMonth));
         const end = new Date(Math.min(b.end_date, lastDayOfMonth));
         if (end > start) {
@@ -156,8 +149,9 @@ router.get('/my-spots', async (req, res) => {
       }, 0);
       
       const stats = {
-        totalBookings: validBookings.length,
-        revenue: totalRevenue,
+        totalBookings: activeBookings.length,
+        revenue: totalRevenue, // Include revenue from cancelled bookings
+        cancelledRevenue: validBookings.filter(b => b.status_id === 3).reduce((sum, b) => sum + Number(b.cost), 0),
         occupancyRate: Math.round((daysOccupiedThisMonth / daysInMonth) * 100)
       };
 

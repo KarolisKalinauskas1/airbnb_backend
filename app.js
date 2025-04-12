@@ -23,9 +23,8 @@ app.use('/api/bookings/webhook', bodyParser.raw({ type: 'application/json' }));
 
 // Add CORS middleware before other middleware
 app.use(cors({
-  origin: 'http://localhost:5173', // Your frontend URL
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'stripe-signature']
 }));
 
@@ -42,9 +41,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Use your routers
 app.use('/', indexRouter);
 app.use('/camping-spots', campersRouter);
+app.use('/api/camping-spots', campersRouter);
+app.use('/users', userRouter);
 app.use('/api/users', userRouter);
+app.use('/dashboard', dashboardRouter);
 app.use('/api/dashboard', dashboardRouter);
-app.use('/api/bookings', bookingsRouter); // Add this line
+app.use('/bookings', bookingsRouter);
+app.use('/api/bookings', bookingsRouter);
 
 // Catch 404 and forward to error handler
 app.use((req, res, next) => {

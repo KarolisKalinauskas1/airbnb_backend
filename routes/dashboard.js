@@ -5,27 +5,42 @@ const prisma = new PrismaClient();
 
 router.get('/analytics', async (req, res) => {
   try {
+    // Calculate date ranges
     const today = new Date();
     const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
     const firstDayLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const daysInMonth = lastDayOfMonth.getDate();
 
     const [bookingStats, spotStats, recentBookings] = await Promise.all([
-      // Booking and revenue statistics - only count confirmed (2) and completed (4) bookings
+      // Booking and revenue statistics
       prisma.$queryRaw`
         WITH booking_metrics AS (
           SELECT 
-            COUNT(*) FILTER (WHERE status_id IN (2, 4)) as total_bookings,
-            SUM(cost) FILTER (WHERE status_id IN (2, 4)) as total_revenue,
+            COUNT(*) as total_bookings,
+            SUM(cost) as total_revenue,
+            
+            -- Monthly bookings, exclude cancelled (status_id = 3)
             COUNT(*) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 4)) as monthly_bookings,
-            SUM(cost) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 4)) as monthly_revenue,
+            
+            -- Monthly revenue, include cancelled for revenue tracking
+            SUM(cost) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 3, 4)) as monthly_revenue,
+            
+            -- Last month bookings, exclude cancelled
             COUNT(*) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} AND status_id IN (2, 4)) as last_month_bookings,
-            SUM(cost) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} AND status_id IN (2, 4)) as last_month_revenue,
-            AVG(cost) FILTER (WHERE status_id IN (2, 4)) as average_revenue,
+            
+            -- Last month revenue, include cancelled for revenue tracking
+            SUM(cost) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} AND status_id IN (2, 3, 4)) as last_month_revenue,
+            
+            -- Average revenue, include cancelled for revenue tracking
+            AVG(cost) FILTER (WHERE status_id IN (2, 3, 4)) as average_revenue,
+            
+            -- Average duration, exclude cancelled bookings
             AVG(
               EXTRACT(DAY FROM (end_date::timestamp - start_date::timestamp))
-            ) FILTER (WHERE status_id IN (2, 4)) as average_duration
+            ) FILTER (WHERE status_id IN (2, 4)) as average_duration,
+            
+            -- Track cancelled revenue separately
+            SUM(cost) FILTER (WHERE status_id = 3) as cancelled_revenue
           FROM bookings
         )
         SELECT 
@@ -66,6 +81,7 @@ router.get('/analytics', async (req, res) => {
           start_date: true,
           end_date: true,
           cost: true,
+          status_id: true,
           camping_spot: {
             select: { title: true }
           },
@@ -79,13 +95,17 @@ router.get('/analytics', async (req, res) => {
       })
     ]);
 
-    // Process spot statistics - filter out cancelled bookings
+    // Process spot statistics
     const spotPerformance = spotStats.map(spot => {
-      const validBookings = spot.bookings.filter(b => [2, 4].includes(b.status_id));
+      // Include status 2 (confirmed), 3 (cancelled), and 4 (completed) bookings for revenue
+      const validBookings = spot.bookings.filter(b => [2, 3, 4].includes(b.status_id));
       const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost), 0);
       
-      // Calculate occupied days in current month
-      const daysOccupiedThisMonth = validBookings.reduce((sum, b) => {
+      // For occupancy calculation, only include confirmed and completed bookings (not cancelled)
+      const activeBookings = spot.bookings.filter(b => [2, 4].includes(b.status_id));
+      
+      // Calculate occupied days in current month for active bookings only
+      const daysOccupiedThisMonth = activeBookings.reduce((sum, b) => {
         const start = new Date(Math.max(b.start_date, firstDayOfMonth));
         const end = new Date(Math.min(b.end_date, lastDayOfMonth));
         if (end > start) {
@@ -94,13 +114,19 @@ router.get('/analytics', async (req, res) => {
         return sum;
       }, 0);
 
+      // Only count cancelled bookings for cancelled revenue
+      const cancelledRevenue = spot.bookings
+        .filter(b => b.status_id === 3)
+        .reduce((sum, b) => sum + Number(b.cost), 0);
+
       return {
         id: spot.camping_spot_id,
         name: spot.title,
-        bookings: validBookings.length,
-        occupancyRate: Math.round((daysOccupiedThisMonth / daysInMonth) * 100),
-        revenue: totalRevenue,
-        trend: validBookings.length > 0 ? 1 : -1,
+        bookings: activeBookings.length, // Only count active bookings for display
+        occupancyRate: Math.round((daysOccupiedThisMonth / lastDayOfMonth.getDate()) * 100),
+        revenue: totalRevenue, // Total revenue includes cancelled bookings
+        cancelledRevenue: cancelledRevenue,
+        trend: activeBookings.length > 0 ? 1 : -1,
         performance: totalRevenue / Math.max(daysOccupiedThisMonth, 1)
       };
     });
@@ -118,14 +144,16 @@ router.get('/analytics', async (req, res) => {
         monthly: Number(bookingStats[0].monthly_revenue) || 0,
         average: Number(bookingStats[0].average_revenue) || 0,
         projected: Number(bookingStats[0].monthly_revenue * 1.1) || 0,
-        growth: Number(bookingStats[0].revenue_growth) || 0
+        growth: Number(bookingStats[0].revenue_growth) || 0,
+        cancelled: Number(bookingStats[0].cancelled_revenue) || 0
       },
       bookings: {
         total: Number(bookingStats[0].total_bookings),
         monthly: Number(bookingStats[0].monthly_bookings),
         averageDuration: Number(bookingStats[0].average_duration) || 0,
         occupancyRate: averageOccupancyRate,
-        growth: Number(bookingStats[0].bookings_growth) || 0
+        growth: Number(bookingStats[0].bookings_growth) || 0,
+        active: spotPerformance.reduce((sum, spot) => sum + spot.bookings, 0)
       },
       popularSpots: spotPerformance.sort((a, b) => b.bookings - a.bookings).slice(0, 5),
       spotPerformance: spotPerformance.sort((a, b) => b.performance - a.performance),
@@ -136,7 +164,8 @@ router.get('/analytics', async (req, res) => {
         startDate: b.start_date.toISOString(),
         endDate: b.end_date.toISOString(),
         revenue: Number(b.cost),
-        status: b.status_booking_transaction.status.toLowerCase()
+        status: b.status_booking_transaction.status.toLowerCase(),
+        cancelled: b.status_id === 3
       }))
     });
   } catch (error) {
