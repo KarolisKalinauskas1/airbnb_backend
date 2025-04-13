@@ -3,28 +3,26 @@ const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const logger = require('morgan');
-const { PrismaClient } = require('@prisma/client');
-const cors = require('cors'); // Add this line
-const bodyParser = require('body-parser'); // Add this line
+const cors = require('cors');
 
-const prisma = new PrismaClient();
-
-// Import your routers
+// Import routes
 const indexRouter = require('./routes/index');
 const campersRouter = require('./routes/campers');
-const userRouter = require('./routes/users')
+const usersRouter = require('./routes/users');
+const authRouter = require('./routes/auth'); // Fix import - import just the router
 const dashboardRouter = require('./routes/dashboard');
-const bookingsRouter = require('./routes/bookings'); // Add this line
+const bookingsRouter = require('./routes/bookings');
 
 const app = express();
 
-// Add this before other middleware
-app.use('/api/bookings/webhook', bodyParser.raw({ type: 'application/json' }));
-
-// Add CORS middleware before other middleware
+// Enable CORS
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    process.env.FRONTEND_URL
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'stripe-signature']
 }));
 
@@ -33,6 +31,19 @@ app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'jade');
 
 app.use(logger('dev'));
+
+// Special handling for Stripe webhook route - must be before general JSON parser
+// This ensures the raw body is preserved for webhook signature verification
+app.use('/api/bookings/webhook', (req, res, next) => {
+  if (req.originalUrl === '/api/bookings/webhook' && req.method === 'POST') {
+    // Let the webhook middleware handle this
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
+// Apply default middleware for other routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -42,8 +53,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/', indexRouter);
 app.use('/camping-spots', campersRouter);
 app.use('/api/camping-spots', campersRouter);
-app.use('/users', userRouter);
-app.use('/api/users', userRouter);
+app.use('/users', usersRouter);
+app.use('/api/users', usersRouter);
+app.use('/api/auth', authRouter); // Use the authRouter directly
+app.use('/auth', authRouter); // Use the authRouter directly
 app.use('/dashboard', dashboardRouter);
 app.use('/api/dashboard', dashboardRouter);
 app.use('/bookings', bookingsRouter);
@@ -56,10 +69,16 @@ app.use((req, res, next) => {
 
 // Error handler
 app.use((err, req, res, next) => {
+  // Set locals, only providing error in development
   res.locals.message = err.message;
   res.locals.error = req.app.get('env') === 'development' ? err : {};
+
+  // Send error response
   res.status(err.status || 500);
-  res.render('error');
+  res.json({
+    error: err.message,
+    status: err.status || 500
+  });
 });
 
 module.exports = app;
