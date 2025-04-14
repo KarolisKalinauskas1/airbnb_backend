@@ -11,32 +11,36 @@ router.get('/analytics', async (req, res) => {
     const firstDayLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
 
     const [bookingStats, spotStats, recentBookings] = await Promise.all([
-      // Booking and revenue statistics - exclude unavailable status (5)
+      // Booking and revenue statistics
       prisma.$queryRaw`
         WITH booking_metrics AS (
           SELECT 
-            COUNT(*) FILTER (WHERE status_id NOT IN (5)) as total_bookings,
+            -- Only count confirmed(2) and completed(4) bookings as "real" bookings
+            COUNT(*) FILTER (WHERE status_id IN (2, 4)) as total_bookings,
+            
+            -- Include all valid revenue (including cancelled)
             SUM(cost) FILTER (WHERE status_id NOT IN (5)) as total_revenue,
             
-            -- Monthly bookings, exclude unavailable
-            COUNT(*) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id NOT IN (5)) as monthly_bookings,
+            -- Monthly bookings only includes confirmed and completed
+            COUNT(*) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 4)) as monthly_bookings,
             
-            -- Monthly revenue, include confirmed, completed, cancelled but not unavailable
+            -- Monthly revenue includes cancelled
             SUM(cost) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 3, 4)) as monthly_revenue,
             
-            -- Last month bookings, exclude cancelled and unavailable
-            COUNT(*) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} AND status_id IN (2, 4)) as last_month_bookings,
+            -- Last month bookings only includes confirmed and completed
+            COUNT(*) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} 
+                            AND status_id IN (2, 4)) as last_month_bookings,
             
-            -- Last month revenue, include confirmed, completed, cancelled but not unavailable
-            SUM(cost) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} AND status_id IN (2, 3, 4)) as last_month_revenue,
+            -- Last month revenue includes cancelled
+            SUM(cost) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} 
+                              AND status_id IN (2, 3, 4)) as last_month_revenue,
             
-            -- Average revenue, exclude unavailable
+            -- Average revenue per booking (excludes unavailable)
             AVG(cost) FILTER (WHERE status_id NOT IN (5)) as average_revenue,
             
-            -- Average duration, exclude cancelled and unavailable
-            AVG(
-              EXTRACT(DAY FROM (end_date::timestamp - start_date::timestamp))
-            ) FILTER (WHERE status_id IN (2, 4)) as average_duration,
+            -- Average duration - only for real bookings (confirmed/completed)
+            AVG(EXTRACT(DAY FROM (end_date::timestamp - start_date::timestamp)))
+              FILTER (WHERE status_id IN (2, 4)) as average_duration,
             
             -- Track cancelled revenue separately
             SUM(cost) FILTER (WHERE status_id = 3) as cancelled_revenue
@@ -55,14 +59,14 @@ router.get('/analytics', async (req, res) => {
         FROM booking_metrics
       `,
 
-      // Spot performance and popularity - exclude unavailability
+      // Spot performance and popularity - get all relevant bookings
       prisma.camping_spot.findMany({
         select: {
           camping_spot_id: true,
           title: true,
           bookings: {
             where: {
-              status_id: { not: 5 } // Exclude unavailable
+              status_id: { in: [2, 3, 4, 5] } // Include all: confirmed, cancelled, completed, unavailable
             },
             select: {
               cost: true,
@@ -74,10 +78,10 @@ router.get('/analytics', async (req, res) => {
         }
       }),
 
-      // Recent bookings - exclude unavailability
+      // Recent bookings
       prisma.bookings.findMany({
         where: {
-          status_id: { not: 5 } // Exclude unavailable
+          status_id: { not: 5 } // Exclude unavailable bookings
         },
         take: 10,
         orderBy: { created_at: 'desc' },
@@ -100,21 +104,31 @@ router.get('/analytics', async (req, res) => {
       })
     ]);
 
-    // Process spot statistics - only count real bookings
+    // Process spot statistics - handle different booking statuses properly
     const spotPerformance = spotStats.map(spot => {
-      // Include status 2 (confirmed), 3 (cancelled), and 4 (completed) for revenue calculations
-      const validBookings = spot.bookings.filter(b => [2, 3, 4].includes(b.status_id));
+      // Revenue includes all bookings except unavailable (status 5)
+      const validBookings = spot.bookings.filter(b => b.status_id !== 5);
       const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost), 0);
       
-      // For occupancy calculation, only include confirmed and completed bookings
-      const activeBookings = spot.bookings.filter(b => [2, 4].includes(b.status_id));
-      const totalDays = activeBookings.reduce((sum, b) => {
-        return sum + Math.ceil((b.end_date - b.start_date) / (1000 * 60 * 60 * 24));
+      // For occupancy calculation, include confirmed(2), completed(4), and unavailable(5) bookings
+      // This correctly accounts for all time periods where the spot cannot be booked
+      const occupiedBookings = spot.bookings.filter(b => [2, 4, 5].includes(b.status_id));
+      const totalDays = occupiedBookings.reduce((sum, b) => {
+        const start = new Date(b.start_date);
+        const end = new Date(b.end_date);
+        // Ensure valid date range calculation
+        if (end > start) {
+          return sum + Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+        }
+        return sum;
       }, 0);
       
-      // Calculate occupancy rate (days booked / days in year)
+      // Calculate occupancy rate (days booked or unavailable / days in year)
       const daysInYear = 365;
-      const occupancyRate = Math.round((totalDays / daysInYear) * 100);
+      const occupancyRate = Math.min(100, Math.round((totalDays / daysInYear) * 100));
+      
+      // For booking count, exclude cancelled(3) and unavailable(5) bookings
+      const activeBookings = spot.bookings.filter(b => [2, 4].includes(b.status_id));
       
       return {
         id: spot.camping_spot_id,
@@ -123,7 +137,7 @@ router.get('/analytics', async (req, res) => {
         occupancyRate: occupancyRate,
         revenue: totalRevenue,
         trend: activeBookings.length > 0 ? 1 : -1,
-        performance: totalRevenue / Math.max(totalDays, 1)
+        performance: activeBookings.length > 0 ? totalRevenue / Math.max(totalDays, 1) : 0
       };
     });
 
@@ -144,10 +158,10 @@ router.get('/analytics', async (req, res) => {
         cancelled: Number(bookingStats[0].cancelled_revenue) || 0
       },
       bookings: {
-        total: Number(bookingStats[0].total_bookings),
+        total: Number(bookingStats[0].total_bookings), // Only counts confirmed and completed
         monthly: Number(bookingStats[0].monthly_bookings),
         averageDuration: Number(bookingStats[0].average_duration) || 0,
-        occupancyRate: averageOccupancyRate,
+        occupancyRate: averageOccupancyRate, // Includes unavailable periods
         growth: Number(bookingStats[0].bookings_growth) || 0,
         active: spotPerformance.reduce((sum, spot) => sum + spot.bookings, 0)
       },
@@ -156,7 +170,7 @@ router.get('/analytics', async (req, res) => {
       recentBookings: recentBookings.map(b => ({
         id: b.booking_id,
         spotName: b.camping_spot.title,
-        guestName: b.users?.full_name || 'N/A',
+        guestName: b.users.full_name,
         startDate: b.start_date.toISOString(),
         endDate: b.end_date.toISOString(),
         revenue: Number(b.cost),

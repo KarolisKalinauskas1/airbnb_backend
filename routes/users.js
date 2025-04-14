@@ -87,30 +87,32 @@ router.post('/sync', async (req, res) => {
 // 🔐 Middleware to protect route with Supabase JWT
 const authenticate = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1]
+    const token = req.headers.authorization?.split(' ')[1];
     
     if (!token) {
-      console.log('No token provided')
-      return res.status(401).json({ error: 'Missing token' })
+      console.log('No token provided');
+      return res.status(401).json({ error: 'Missing token' });
     }
 
-    const { data: { user }, error } = await supabase.auth.getUser(token)
+    console.log('Token received, verifying with Supabase...');
+    const { data: { user }, error } = await supabase.auth.getUser(token);
     
     if (error) {
-      console.log('Token validation error:', error)
-      return res.status(401).json({ error: 'Invalid token' })
+      console.log('Token validation error:', error);
+      return res.status(401).json({ error: 'Invalid token', details: error.message });
     }
     
     if (!user) {
-      console.log('No user found for token')
-      return res.status(401).json({ error: 'User not found' })
+      console.log('No user found for token');
+      return res.status(401).json({ error: 'User not found' });
     }
 
-    req.supabaseUser = user
-    next()
+    console.log('User authenticated:', user.email);
+    req.supabaseUser = user;
+    next();
   } catch (err) {
-    console.error('Authentication error:', err)
-    return res.status(401).json({ error: 'Authentication failed' })
+    console.error('Authentication error:', err);
+    return res.status(401).json({ error: 'Authentication failed', details: err.message });
   }
 }
 
@@ -122,6 +124,9 @@ router.get('/full-info', authenticate, async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
+
+    // Add error handling and logging
+    console.log(`Fetching user info for email: ${email}`);
 
     const results = await prisma.$queryRawUnsafe(`
       SELECT
@@ -148,10 +153,21 @@ router.get('/full-info', authenticate, async (req, res) => {
                   )
                   ELSE NULL
                 END,
+                'transaction', (
+                  SELECT json_agg(
+                    json_build_object(
+                      'transaction_id', tr.transaction_id,
+                      'amount', tr.amount,
+                      'status_id', tr.status_id
+                    )
+                  ) 
+                  FROM transaction tr
+                  WHERE tr.booking_id = b.booking_id
+                ),
                 'camping_spot', CASE
                   WHEN cs.camping_spot_id IS NOT NULL THEN json_build_object(
                     'camping_spot_id', cs.camping_spot_id,
-                    'title', cs.title,  /* Add this line to include spot title */
+                    'title', cs.title,
                     'description', cs.description,
                     'max_guests', cs.max_guests,
                     'price_per_night', cs.price_per_night,
@@ -165,12 +181,6 @@ router.get('/full-info', authenticate, async (req, res) => {
                       FROM images i
                       WHERE i.camping_id = cs.camping_spot_id
                     )
-                  )
-                  ELSE NULL
-                END,
-                'transaction', CASE
-                  WHEN t.transaction_id IS NOT NULL THEN json_build_object(
-                    'transaction_id', t.transaction_id
                   )
                   ELSE NULL
                 END
@@ -190,13 +200,15 @@ router.get('/full-info', authenticate, async (req, res) => {
     `, email);
 
     if (!results || results.length === 0) {
+      console.log(`No user found for email: ${email}`);
       return res.status(404).json({ error: 'User not found' });
     }
 
+    console.log(`User found: ${results[0].user_id}`);
     res.json(results[0]);
   } catch (error) {
     console.error('Error fetching user info:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 });
 

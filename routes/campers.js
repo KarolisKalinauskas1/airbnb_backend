@@ -97,6 +97,12 @@ router.get('/', async (req, res) => {
       });
     }
 
+    // Always ensure we send an array, even if empty
+    if (!Array.isArray(spots)) {
+      console.warn('Expected spots to be an array but got:', typeof spots);
+      spots = [];
+    }
+
     res.json(spots);
   } catch (error) {
     console.error('Search Error:', error);
@@ -227,28 +233,39 @@ router.get('/my-spots', async (req, res) => {
     const daysInMonth = lastDayOfMonth.getDate();
 
     const spotsWithStats = spots.map(spot => {
-      // Include status 2 (confirmed), 3 (cancelled), and 4 (completed) for revenue calculations
+      // For revenue calculations - include status 2 (confirmed), 3 (cancelled), and 4 (completed) but not unavailable(5)
       const validBookings = spot.bookings.filter(b => [2, 3, 4].includes(b.status_id));
       const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost), 0);
       
-      // For occupancy, only count non-cancelled bookings
-      const activeBookings = validBookings.filter(b => [2, 4].includes(b.status_id));
+      // For occupancy - include confirmed(2), completed(4), and unavailable(5) bookings (exclude cancelled)
+      const occupiedBookings = spot.bookings.filter(b => [2, 4, 5].includes(b.status_id));
       
       // Calculate occupied days in current month
-      const daysOccupiedThisMonth = activeBookings.reduce((sum, b) => {
-        const start = new Date(Math.max(b.start_date, firstDayOfMonth));
-        const end = new Date(Math.min(b.end_date, lastDayOfMonth));
+      const daysOccupiedThisMonth = occupiedBookings.reduce((sum, b) => {
+        // Convert to date objects to ensure proper date handling
+        const start = new Date(Math.max(new Date(b.start_date), firstDayOfMonth));
+        const end = new Date(Math.min(new Date(b.end_date), lastDayOfMonth));
+        
+        // Only count if the end date is after start date
         if (end > start) {
-          return sum + Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+          const daysDiff = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+          return sum + daysDiff;
         }
         return sum;
       }, 0);
       
+      // For bookings count - only include confirmed(2) and completed(4) bookings
+      const activeBookings = spot.bookings.filter(b => [2, 4].includes(b.status_id));
+      
       const stats = {
-        totalBookings: activeBookings.length,
-        revenue: totalRevenue, // Include revenue from cancelled bookings
+        totalBookings: activeBookings.length, // Exclude cancelled and unavailable
+        revenue: totalRevenue, 
         cancelledRevenue: validBookings.filter(b => b.status_id === 3).reduce((sum, b) => sum + Number(b.cost), 0),
-        occupancyRate: Math.round((daysOccupiedThisMonth / daysInMonth) * 100)
+        activeBookings: spot.bookings.filter(b => {
+          const end = new Date(b.end_date);
+          return end >= today && [2].includes(b.status_id); // Only count confirmed(2) for active
+        }).length,
+        occupancyRate: Math.min(100, Math.round((daysOccupiedThisMonth / daysInMonth) * 100))
       };
 
       return {
@@ -259,8 +276,8 @@ router.get('/my-spots', async (req, res) => {
 
     res.json(spotsWithStats);
   } catch (error) {
-    console.error('Owner Spots Error:', error);
-    res.status(500).json({ error: 'Failed to fetch owner camping spots' });
+    console.error('My Spots Error:', error);
+    res.status(500).json({ error: 'Failed to fetch your camping spots' });
   }
 });
 
@@ -318,23 +335,28 @@ router.get('/owner', authenticate, async (req, res) => {
   }
 });
 
-// Helper function to calculate occupancy rate
+// Helper function to calculate occupancy rate - update to include unavailable
 function calculateOccupancyRate(bookings) {
   const now = new Date();
   const thisYear = now.getFullYear();
   const daysInYear = 365;
   
-  const bookedDays = bookings.reduce((total, booking) => {
+  // Include both confirmed/completed and unavailable bookings for occupancy calculation
+  const occupiedBookings = bookings.filter(b => [2, 4, 5].includes(b.status_id));
+  
+  const bookedDays = occupiedBookings.reduce((total, booking) => {
+    // Ensure dates are valid Date objects
     const start = new Date(booking.start_date);
     const end = new Date(booking.end_date);
-    if (start.getFullYear() === thisYear) {
-      const days = (end - start) / (1000 * 60 * 60 * 24);
+    
+    if (start.getFullYear() === thisYear && end > start) {
+      const days = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
       return total + days;
     }
     return total;
   }, 0);
 
-  return Math.round((bookedDays / daysInYear) * 100);
+  return Math.min(100, Math.round((bookedDays / daysInYear) * 100));
 }
 
 // Get all amenities
@@ -369,8 +391,9 @@ router.get('/countries', async (req, res) => {
 
 // Create new camping spot
 router.post('/', upload.array('images', 10), async (req, res) => {
-  console.log('Received request body:', req.body);
-  console.log('Received files:', req.files);
+  console.log('Received POST request for new camping spot');
+  console.log('Request body:', req.body);
+  console.log('Files received:', req.files ? req.files.length : 0);
 
   try {
     const {
@@ -383,88 +406,140 @@ router.post('/', upload.array('images', 10), async (req, res) => {
       amenities: amenitiesStr
     } = req.body;
 
-    const location = typeof locationStr === 'string' ? JSON.parse(locationStr) : locationStr;
-    const amenities = typeof amenitiesStr === 'string' ? JSON.parse(amenitiesStr) : amenitiesStr;
-
-    // Upload images to Cloudinary first
-    const uploadedImages = [];
-    if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        try {
-          const base64String = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-          const result = await cloudinary.uploader.upload(base64String, {
-            folder: 'camping_spots',
-            resource_type: 'auto'
-          });
-          // Store URL with public_id appended as a query parameter
-          uploadedImages.push({
-            image_url: `${result.secure_url}#${result.public_id}`
-          });
-        } catch (uploadError) {
-          console.error('Image upload error:', uploadError);
-          throw new Error('Failed to upload image to Cloudinary');
-        }
-      }
+    // Validate required fields
+    if (!title || !description || !price_per_night || !max_guests || !owner_id) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: 'Title, description, price, max guests, and owner ID are required'
+      });
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      // Create location first
+    // Explicitly validate owner_id to prevent NaN
+    if (!owner_id) {
+      return res.status(400).json({ error: 'owner_id is required' });
+    }
+
+    const parsedOwnerId = parseInt(owner_id);
+    if (isNaN(parsedOwnerId)) {
+      return res.status(400).json({ 
+        error: 'Invalid owner_id format', 
+        details: `Received owner_id: ${owner_id}`
+      });
+    }
+    
+    // Parse JSON strings safely
+    let locationData, amenities;
+    
+    try {
+      locationData = typeof locationStr === 'string' ? JSON.parse(locationStr) : locationStr;
+      amenities = typeof amenitiesStr === 'string' ? JSON.parse(amenitiesStr) : amenitiesStr;
+    } catch (parseError) {
+      console.error('JSON parsing error:', parseError);
+      return res.status(400).json({ 
+        error: 'Invalid data format', 
+        details: 'Could not parse location or amenities data'
+      });
+    }
+    
+    // Validate location data
+    if (!locationData || !locationData.address_line1 || !locationData.city || !locationData.country_id || !locationData.postal_code) {
+      return res.status(400).json({ 
+        error: 'Invalid location data',
+        details: 'Address, city, country, and postal code are required'
+      });
+    }
+    
+    if (!Array.isArray(amenities)) {
+      amenities = []; // Default to empty array if not provided or invalid
+    }
+
+    // Get coordinates for the address using geocoding service
+    let coordinates = { latitude: 0, longitude: 0 };
+    try {
+      coordinates = await geocodeAddress(locationData);
+      console.log('Geocoded coordinates:', coordinates);
+    } catch (geocodeError) {
+      console.error('Geocoding error:', geocodeError);
+      // Continue with default coordinates if geocoding fails
+      console.log('Using default coordinates due to geocoding failure');
+    }
+
+    // Upload images to Cloudinary
+    const imageUploadPromises = req.files.map(file => {
+      return new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          { folder: 'camping_spots' },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result.secure_url + '#' + result.public_id);
+          }
+        );
+        uploadStream.end(file.buffer);
+      });
+    });
+
+    const imageUrls = await Promise.all(imageUploadPromises);
+
+    // Create camping spot with all related data in a transaction
+    const newSpot = await prisma.$transaction(async (tx) => {
+      // First, create or connect to the location
       const newLocation = await tx.location.create({
         data: {
-          address_line1: location.address_line1,
-          address_line2: location.address_line2 || '',
-          city: location.city,
-          country_id: parseInt(location.country_id),
-          postal_code: location.postal_code,
-          longtitute: '0', // You might want to add proper coordinates
-          latitute: '0'
+          address_line1: locationData.address_line1,
+          address_line2: locationData.address_line2 || '',
+          city: locationData.city,
+          country_id: parseInt(locationData.country_id),
+          postal_code: locationData.postal_code,
+          longtitute: String(coordinates.longitude || 0),
+          latitute: String(coordinates.latitude || 0)
         }
       });
 
-      // Create camping spot with location and images
-      const newSpot = await tx.camping_spot.create({
+      // Then create the camping spot with the location connected
+      return await tx.camping_spot.create({
         data: {
           title,
           description,
           max_guests: parseInt(max_guests),
           price_per_night: parseFloat(price_per_night),
-          owner_id: parseInt(owner_id),
-          location_id: newLocation.location_id,
-          created_at: new Date(),
-          updated_at: new Date(),
+          owner: {
+            connect: { owner_id: parseInt(owner_id) }
+          },
+          location: {
+            connect: { location_id: newLocation.location_id }
+          },
           camping_spot_amenities: {
-            create: amenities.map(amenity_id => ({
+            create: amenities.map(amenityId => ({
               amenity: {
-                connect: { amenity_id: parseInt(amenity_id) }
+                connect: { amenity_id: parseInt(amenityId) }
               }
             }))
           },
           images: {
-            create: uploadedImages.map(img => ({
-              image_url: img.image_url,
+            create: imageUrls.map(url => ({
+              image_url: url,
               created_at: new Date()
             }))
-          }
+          },
+          created_at: new Date(),
+          updated_at: new Date()
         },
         include: {
           camping_spot_amenities: {
-            include: { amenity: true }
+            include: {
+              amenity: true
+            }
           },
           images: true,
           location: true
         }
       });
-
-      return newSpot;
     });
 
-    res.status(201).json(result);
+    res.status(201).json(newSpot);
   } catch (error) {
     console.error('Create Error:', error);
-    res.status(500).json({ 
-      error: 'Failed to create camping spot',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Failed to create camping spot', details: error.message });
   }
 });
 
@@ -485,22 +560,81 @@ router.put('/:id', upload.array('images', 10), async (req, res) => {
       existing_images: existingImagesStr
     } = req.body;
 
-    const location = JSON.parse(locationStr);
-    const amenities = JSON.parse(amenitiesStr);
-    const existingImages = JSON.parse(existingImagesStr || '[]');
+    // Log the description for debugging
+    console.log('Received description:', description);
+
+    // Validate field lengths
+    if (title && title.length > 100) {
+      return res.status(400).json({ 
+        error: 'Validation error', 
+        details: 'Title must be less than 100 characters' 
+      });
+    }
+
+    if (description && description.length > 2000) {
+      return res.status(400).json({ 
+        error: 'Validation error', 
+        details: 'Description must be less than 2000 characters' 
+      });
+    }
+
+    // Parse and validate JSON data
+    let locationData, amenities, existingImages;
+    try {
+      locationData = typeof locationStr === 'string' ? JSON.parse(locationStr) : locationStr;
+      amenities = typeof amenitiesStr === 'string' ? JSON.parse(amenitiesStr) : amenitiesStr;
+      existingImages = JSON.parse(existingImagesStr || '[]');
+    } catch (parseError) {
+      console.error('JSON parsing error:', parseError);
+      return res.status(400).json({ 
+        error: 'Invalid data format', 
+        details: 'Could not parse location or amenities data'
+      });
+    }
+
+    // Validate and trim location data
+    if (locationData) {
+      // Trim all string fields
+      if (locationData.address_line1) locationData.address_line1 = locationData.address_line1.trim().substring(0, 255);
+      if (locationData.address_line2) locationData.address_line2 = locationData.address_line2.trim().substring(0, 255);
+      if (locationData.city) locationData.city = locationData.city.trim().substring(0, 100);
+      if (locationData.postal_code) locationData.postal_code = locationData.postal_code.trim().substring(0, 20);
+    }
+
+    // Get coordinates for the address using geocoding service
+    let coordinates = { latitude: 0, longitude: 0 };
+    try {
+      coordinates = await geocodeAddress(locationData);
+      console.log('Geocoded coordinates:', coordinates);
+    } catch (geocodeError) {
+      console.error('Geocoding error:', geocodeError);
+      // Continue with default coordinates if geocoding fails
+    }
+
+    // Ensure coordinates are properly formatted with limited precision
+    const formattedLongitude = typeof coordinates.longitude === 'number' ? 
+      coordinates.longitude.toFixed(6) : '0';
+    const formattedLatitude = typeof coordinates.latitude === 'number' ? 
+      coordinates.latitude.toFixed(6) : '0';
 
     // Upload new images to Cloudinary
     const uploadedImages = [];
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         try {
-          const base64String = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-          const result = await cloudinary.uploader.upload(base64String, {
-            folder: 'camping_spots',
-            resource_type: 'auto'
+          const result = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+              { folder: 'camping_spots' },
+              (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+              }
+            );
+            uploadStream.end(file.buffer);
           });
+          
           uploadedImages.push({
-            image_url: result.secure_url,
+            image_url: `${result.secure_url}#${result.public_id}`,
             created_at: new Date()
           });
         } catch (uploadError) {
@@ -510,17 +644,47 @@ router.put('/:id', upload.array('images', 10), async (req, res) => {
       }
     }
 
+    // Clean up and validate text fields 
+    const cleanTitle = title ? title.trim().substring(0, 100) : '';
+    const cleanDescription = description ? description.trim().substring(0, 1000) : ''; // Reduce max length to 255 characters
+    
+    // Log the cleaned description
+    console.log('Clean description prepared for update:', cleanDescription);
+    console.log('Description length:', cleanDescription.length);
+    
+    // Validate numeric fields
+    const parsedMaxGuests = parseInt(max_guests);
+    if (isNaN(parsedMaxGuests) || parsedMaxGuests < 1) {
+      return res.status(400).json({ error: 'Invalid max guests value' });
+    }
+    
+    const parsedPrice = parseFloat(price_per_night);
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+      return res.status(400).json({ error: 'Invalid price value' });
+    }
+
+    // Get existing camping spot to retain values that aren't being updated
+    const existingSpot = await prisma.camping_spot.findUnique({
+      where: { camping_spot_id: parseInt(id) }
+    });
+
+    if (!existingSpot) {
+      return res.status(404).json({ error: 'Camping spot not found' });
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       // Update location
-      if (location.location_id) {
+      if (locationData.location_id) {
         await tx.location.update({
-          where: { location_id: parseInt(location.location_id) },
+          where: { location_id: parseInt(locationData.location_id) },
           data: {
-            address_line1: location.address_line1,
-            address_line2: location.address_line2 || '',
-            city: location.city,
-            country_id: parseInt(location.country_id),
-            postal_code: location.postal_code
+            address_line1: locationData.address_line1,
+            address_line2: locationData.address_line2 || '',
+            city: locationData.city,
+            country_id: parseInt(locationData.country_id),
+            postal_code: locationData.postal_code,
+            longtitute: formattedLongitude,
+            latitute: formattedLatitude
           }
         });
       }
@@ -546,18 +710,18 @@ router.put('/:id', upload.array('images', 10), async (req, res) => {
           where: { camping_id: parseInt(id) }
         });
       } else {
-        // Delete only images that aren't in existingImages
+        // Otherwise, only delete images that are not in the existingImages array
         await tx.images.deleteMany({
           where: {
-            AND: [
-              { camping_id: parseInt(id) },
-              { image_id: { notIn: existingImages.map(imgId => parseInt(imgId)) } }
-            ]
+            camping_id: parseInt(id),
+            NOT: {
+              image_id: { in: existingImages.map(id => parseInt(id)) }
+            }
           }
         });
       }
 
-      // Add new images
+      // Add new uploaded images
       if (uploadedImages.length > 0) {
         await tx.images.createMany({
           data: uploadedImages.map(img => ({
@@ -568,16 +732,23 @@ router.put('/:id', upload.array('images', 10), async (req, res) => {
         });
       }
 
-      // Update camping spot
+      // Prepare update data with proper handling of potentially missing fields
+      const updateData = {
+        updated_at: new Date()
+      };
+
+      // Only include fields in the update if they were provided
+      if (title !== undefined) updateData.title = cleanTitle;
+      if (description !== undefined) updateData.description = cleanDescription;
+      if (max_guests !== undefined) updateData.max_guests = parsedMaxGuests;
+      if (price_per_night !== undefined) updateData.price_per_night = parsedPrice;
+
+      console.log('Updating camping spot with data:', updateData);
+
+      // Update camping spot with clean values
       return await tx.camping_spot.update({
         where: { camping_spot_id: parseInt(id) },
-        data: {
-          title,
-          description,
-          max_guests: parseInt(max_guests),
-          price_per_night: parseFloat(price_per_night),
-          updated_at: new Date()
-        },
+        data: updateData,
         include: {
           camping_spot_amenities: {
             include: { amenity: true }
@@ -603,7 +774,7 @@ router.put('/:id', upload.array('images', 10), async (req, res) => {
   }
 });
 
-// Update camping spot price
+// Update camping spot price endpoint
 router.patch('/:id/price', async (req, res) => {
   try {
     const { id } = req.params;
@@ -611,7 +782,6 @@ router.patch('/:id/price', async (req, res) => {
     
     // Added more logging for debugging
     console.log('Price update request received:', { id, price_per_night, body: req.body });
-    
     // Check if we received price through price_per_night or price field
     let priceValue = price_per_night;
     if (priceValue === undefined && req.body.price !== undefined) {
@@ -622,12 +792,21 @@ router.patch('/:id/price', async (req, res) => {
       console.error('Invalid price received:', priceValue);
       return res.status(400).json({ error: 'Valid price is required' });
     }
-    
+
     // Parse the price to a float with 2 decimal places
     const formattedPrice = parseFloat(parseFloat(priceValue).toFixed(2));
     
-    console.log(`Updating price for spot ${id} to ${formattedPrice}`);
+    // Enforce a minimum price
+    if (formattedPrice < 5) {
+      return res.status(400).json({ error: 'Price cannot be less than €5' });
+    }
+
+    // Enforce a maximum price for sanity
+    if (formattedPrice > 1000) {
+      return res.status(400).json({ error: 'Price cannot exceed €1000' });
+    }
     
+    console.log(`Updating price for spot ${id} to ${formattedPrice}`);
     // Update the spot with new price
     const updatedSpot = await prisma.camping_spot.update({
       where: { camping_spot_id: parseInt(id) },
@@ -638,15 +817,20 @@ router.patch('/:id/price', async (req, res) => {
       select: {
         camping_spot_id: true,
         title: true,
-        price_per_night: true
+        price_per_night: true,
+        updated_at: true
       }
     });
     
     console.log('Price updated successfully:', updatedSpot);
     res.json(updatedSpot);
   } catch (error) {
-    console.error('Update Price Error:', error);
-    res.status(500).json({ error: 'Failed to update camping spot price' });
+    console.error('Price Update Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update camping spot price',
+      details: error.message,
+      stack: error.stack 
+    });
   }
 });
 
@@ -663,6 +847,10 @@ router.delete('/:id', async (req, res) => {
 
       await tx.images.deleteMany({
         where: { camping_id: parseInt(id) }
+      });
+
+      await tx.bookings.deleteMany({
+        where: { camping_spot_id: parseInt(id) }
       });
 
       // Delete the camping spot
@@ -726,6 +914,8 @@ router.get('/:id', async (req, res) => {
       }
       
       // Check for bookings or unavailable dates that would block this reservation period
+      // Only check status 2 (confirmed), 4 (completed), and 5 (unavailable)
+      // Explicitly exclude status 3 (cancelled)
       const existingBookings = await prisma.bookings.findMany({
         where: {
           camper_id: parseInt(id),
@@ -740,7 +930,7 @@ router.get('/:id', async (req, res) => {
           ]
         }
       });
-      
+
       if (existingBookings.length > 0) {
         // For API clients that need to know if dates are available
         res.setHeader('X-Dates-Available', 'false');
@@ -798,7 +988,7 @@ router.get('/:id/availability', async (req, res) => {
   try {
     const { id } = req.params;
     const { startDate, endDate } = req.query;
-    
+
     if (!startDate || !endDate) {
       return res.status(400).json({ error: 'Start date and end date are required' });
     }
@@ -813,7 +1003,7 @@ router.get('/:id/availability', async (req, res) => {
     if (!spotExists) {
       return res.status(404).json({ error: 'Camping spot not found' });
     }
-    
+
     // Convert dates to JavaScript Date objects with validation
     let start, end;
     try {
@@ -832,7 +1022,8 @@ router.get('/:id/availability', async (req, res) => {
       where: {
         camper_id: parseInt(id),
         status_id: {
-          in: [2, 4, 5] // Only show confirmed (2), completed (4), and unavailable (5) bookings
+          in: [2, 4, 5] // Only show confirmed (2), completed (4), and unavailable (5)
+                        // Explicitly exclude cancelled (3) bookings
         },
         OR: [
           // Booking starts within the range
@@ -852,16 +1043,8 @@ router.get('/:id/availability', async (req, res) => {
           // Booking spans the entire range
           {
             AND: [
-              {
-                start_date: {
-                  lte: start
-                }
-              },
-              {
-                end_date: {
-                  gte: end
-                }
-              }
+              { start_date: { lte: start } },
+              { end_date: { gte: end } }
             ]
           }
         ]
@@ -873,7 +1056,7 @@ router.get('/:id/availability', async (req, res) => {
         status_id: true
       }
     });
-    
+
     res.json({ bookings });
   } catch (error) {
     console.error('Availability Error:', error);
@@ -886,13 +1069,13 @@ router.post('/:id/availability', async (req, res) => {
   try {
     const { id } = req.params;
     const { startDate, endDate, owner_id } = req.body;
-    
+
     console.log('Blocking availability request:', { id, startDate, endDate, owner_id });
-    
+
     if (!startDate || !endDate) {
       return res.status(400).json({ error: 'Start date and end date are required' });
     }
-    
+
     // Validate dates
     const start = new Date(startDate);
     const end = new Date(endDate);
@@ -902,22 +1085,22 @@ router.post('/:id/availability', async (req, res) => {
     today.setHours(0, 0, 0, 0);
     start.setHours(0, 0, 0, 0);
     end.setHours(0, 0, 0, 0);
-    
+
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       console.error('Invalid date format:', { startDate, endDate });
       return res.status(400).json({ error: 'Invalid date format' });
     }
-    
+
     if (start < today) {
       console.error('Cannot block dates in the past:', { start, today });
       return res.status(400).json({ error: 'Cannot block dates in the past' });
     }
-    
+
     if (end <= start) {
       console.error('End date must be after start date:', { start, end });
       return res.status(400).json({ error: 'End date must be after start date' });
     }
-    
+
     // Check for existing bookings in this date range that aren't cancelled or unavailable
     const existingBookings = await prisma.bookings.findMany({
       where: {
@@ -950,14 +1133,14 @@ router.post('/:id/availability', async (req, res) => {
         ]
       }
     });
-    
+
     if (existingBookings.length > 0) {
       console.log('Cannot block dates due to existing bookings:', existingBookings.length);
       return res.status(400).json({ 
         error: 'Cannot block availability due to existing bookings in this date range' 
       });
     }
-    
+
     // Create unavailability booking
     const unavailableBooking = await prisma.bookings.create({
       data: {
@@ -971,11 +1154,11 @@ router.post('/:id/availability', async (req, res) => {
         status_id: 5 // UNAVAILABLE status
       }
     });
-    
+
     console.log('Successfully blocked dates:', { bookingId: unavailableBooking.booking_id });
     res.status(201).json({ 
       message: 'Dates marked as unavailable successfully',
-      booking: unavailableBooking 
+      booking: unavailableBooking
     });
   } catch (error) {
     console.error('Availability Block Error:', error);
@@ -987,7 +1170,7 @@ router.post('/:id/availability', async (req, res) => {
 router.delete('/:id/availability/:bookingId', async (req, res) => {
   try {
     const { id, bookingId } = req.params;
-    
+
     // Validate the booking exists and is associated with this camping spot
     const booking = await prisma.bookings.findFirst({
       where: {
@@ -996,20 +1179,18 @@ router.delete('/:id/availability/:bookingId', async (req, res) => {
         status_id: 5 // UNAVAILABLE status
       }
     });
-    
+
     if (!booking) {
       return res.status(404).json({ 
         error: 'Availability block not found or not associated with this camping spot'
       });
     }
-    
+
     // Delete the unavailability booking
     await prisma.bookings.delete({
-      where: {
-        booking_id: parseInt(bookingId)
-      }
+      where: { booking_id: parseInt(bookingId) }
     });
-    
+
     res.json({ message: 'Availability block removed successfully' });
   } catch (error) {
     console.error('Delete Availability Block Error:', error);
@@ -1017,100 +1198,230 @@ router.delete('/:id/availability/:bookingId', async (req, res) => {
   }
 });
 
-// Get price suggestion for a camping spot
+// Find the price suggestion endpoint and replace it with this improved version
 router.get('/:id/price-suggestion', async (req, res) => {
   try {
     const { id } = req.params;
-    
-    // Get the camping spot
     const spot = await prisma.camping_spot.findUnique({
-      where: {
-        camping_spot_id: parseInt(id)
+      where: { camping_spot_id: parseInt(id) },
+      include: {
+        location: {
+          include: {
+            country: true
+          }
+        },
+        bookings: true,
+        camping_spot_amenities: true
       }
     });
-
+    
     if (!spot) {
       return res.status(404).json({ error: 'Camping spot not found' });
     }
 
-    // Get location data if available
-    let location = null;
-    if (spot.location_id) {
-      location = await prisma.location.findUnique({
-        where: {
-          location_id: spot.location_id
-        }
+    // Check if price was updated in the last 24 hours - if so, don't provide a new suggestion
+    const lastUpdateTime = new Date(spot.updated_at || spot.created_at);
+    const timeSinceUpdate = Date.now() - lastUpdateTime.getTime();
+    const hoursSinceUpdate = timeSinceUpdate / (1000 * 60 * 60);
+
+    // If updated in the last 24 hours, return current price as suggestion with a note
+    if (hoursSinceUpdate < 24) {
+      return res.json({
+        suggested_price: spot.price_per_night,
+        min_suggestion: spot.price_per_night * 0.95, 
+        max_suggestion: spot.price_per_night * 1.05,
+        reason: "Price was recently updated. New suggestions will be available later.",
+        market_details: {
+          similar_spots_avg_price: null,
+          demand_factor: 1,
+          seasonality_factor: 1,
+          amenities_factor: 1,
+          occupancy_rate: 0, // We're not calculating this currently
+          similar_spots: 0,
+          market_average: null,
+          season: "standard",
+          demand: "normal",
+          last_updated: lastUpdateTime.toISOString(),
+          hours_since_update: Math.round(hoursSinceUpdate)
+        },
+        should_update: false
       });
     }
 
-    // Get amenities for this spot
-    const spotAmenities = await prisma.camping_spot_amenities.count({
+    // Get the current date for seasonal pricing
+    const currentDate = new Date();
+    const month = currentDate.getMonth(); // 0-11
+    const dayOfWeek = currentDate.getDay(); // 0-6
+
+    // Calculate seasonal multiplier (higher in summer months)
+    let seasonalityFactor = 1.0;
+    let season = "standard";
+
+    // Summer (Jun-Aug): Higher prices
+    if (month >= 5 && month <= 7) {
+      seasonalityFactor = 1.15 + (Math.random() * 0.1); // 1.15-1.25
+      season = "peak";
+    }
+    // Spring (Mar-May) and Fall (Sept-Oct): Medium-high prices
+    else if ((month >= 2 && month <= 4) || (month >= 8 && month <= 9)) {
+      seasonalityFactor = 1.05 + (Math.random() * 0.05); // 1.05-1.10
+      season = "high";
+    }
+    // Winter (Nov-Feb): Lower prices except holiday season
+    else if ((month === 11 && currentDate.getDate() > 15) || month === 0) {
+      // Holiday season (Dec 15-Jan)
+      seasonalityFactor = 1.1 + (Math.random() * 0.1); // 1.1-1.2
+      season = "holiday";
+    }
+    else {
+      seasonalityFactor = 0.85 + (Math.random() * 0.1); // 0.85-0.95
+      season = "off-peak";
+    }
+
+    // Weekend premium (Fri-Sat)
+    if (dayOfWeek === 5 || dayOfWeek === 6) {
+      seasonalityFactor *= 1.1;
+    }
+
+    // Get similar spots in the same country or city for comparison
+    const similarSpots = await prisma.camping_spot.findMany({
       where: {
-        camping_spot_id: parseInt(id)
-      }
-    });
-    
-    // Find similar spots for price comparison (simplified approach)
-    const allSpots = await prisma.camping_spot.findMany({
-      where: {
-        camping_spot_id: {
-          not: parseInt(id)
-        }
+        camping_spot_id: { not: parseInt(id) },
+        location: {
+          country_id: spot.location.country_id
+        },
       },
-      select: {
-        price_per_night: true,
-        max_guests: true
+      include: {
+        bookings: true,
       }
     });
-    
-    // Calculate suggested price based on available data
-    
-    // 1. Base price - either the spot's current price or an average
-    let basePrice = spot.price_per_night || 50; // Default if no price set
-    
-    // 2. Similar spots by guest capacity
-    const similarSpots = allSpots.filter(s => 
+
+    // Filter to find more relevant similar spots
+    const relevantSpots = similarSpots.filter(s => 
       Math.abs(s.max_guests - spot.max_guests) <= 2
     );
-    
-    let similarSpotsAvgPrice = null;
-    if (similarSpots.length > 0) {
-      similarSpotsAvgPrice = similarSpots.reduce((sum, s) => sum + s.price_per_night, 0) / similarSpots.length;
-      // Adjust base price if we have similar spots data
-      basePrice = (basePrice + similarSpotsAvgPrice) / 2;
+
+    // Calculate demand factor based on recent bookings and cancellations
+    const recentBookings = spot.bookings.filter(b => {
+      const bookingDate = new Date(b.created_at);
+      const daysSinceBooking = (Date.now() - bookingDate.getTime()) / (1000 * 60 * 60 * 24);
+      return daysSinceBooking <= 30; // Bookings within last 30 days
+    });
+
+    const confirmedBookings = recentBookings.filter(b => b.status_id === 2).length;
+    const completedBookings = recentBookings.filter(b => b.status_id === 4).length;
+    const cancelledBookings = recentBookings.filter(b => b.status_id === 3).length;
+
+    // Demand factor calculation
+    let demandFactor = 1.0;
+    let demandCategory = "normal";
+
+    if (recentBookings.length > 0) {
+      // Calculate ratio of successful vs cancelled bookings
+      const successRate = (confirmedBookings + completedBookings) / 
+                          Math.max(1, (confirmedBookings + completedBookings + cancelledBookings));
+
+      if (successRate > 0.8 && (confirmedBookings + completedBookings) >= 3) {
+        // High demand - more bookings and high success rate
+        demandFactor = 1.05 + (Math.random() * 0.15); // 1.05-1.20
+        demandCategory = "high";
+      } else if (successRate < 0.5 || cancelledBookings > confirmedBookings) {
+        // Low demand - high cancellation rate
+        demandFactor = 0.9 - (Math.random() * 0.1); // 0.8-0.9
+        demandCategory = "low";
+      } else {
+        // Normal demand
+        demandFactor = 0.95 + (Math.random() * 0.1); // 0.95-1.05
+        demandCategory = "normal";
+      }
     }
-    
-    // 3. Determine demand factor (simplified)
-    const demandFactor = 1.0;
-    
-    // 4. Seasonality factor
-    const currentMonth = new Date().getMonth();
-    // Summer months have higher demand
-    const seasonalityFactor = [5, 6, 7, 8].includes(currentMonth) ? 1.15 : 
-                              [0, 1, 11].includes(currentMonth) ? 0.85 : 1.0;
-    
-    // 5. Amenities premium
-    const amenitiesFactor = 1 + (Math.min(spotAmenities, 10) / 40); // Max 25% increase for 10+ amenities
-    
-    // Calculate suggested price with all factors
-    let suggestedPrice = basePrice * demandFactor * seasonalityFactor * amenitiesFactor;
-    
-    // Round to nearest 0.5
-    suggestedPrice = Math.round(suggestedPrice * 2) / 2;
-    
-    // Ensure minimum price
-    suggestedPrice = Math.max(10, suggestedPrice);
-    
-    // Send back the suggestion with details
+
+    // Amenities factor - more amenities justify higher price
+    const amenitiesCount = spot.camping_spot_amenities.length;
+    const amenitiesFactor = 1 + (Math.min(amenitiesCount, 10) * 0.01);
+
+    // Calculate market average if we have relevant spots
+    let marketAverage = null;
+    if (relevantSpots.length > 0) {
+      const totalPrice = relevantSpots.reduce((sum, s) => sum + s.price_per_night, 0);
+      marketAverage = Math.round(totalPrice / relevantSpots.length);
+    }
+
+    // Base price calculation - weighted between current price and market average
+    let basePrice = spot.price_per_night;
+    if (marketAverage) {
+      // Market weight increases if the price hasn't been updated in a while
+      const marketWeight = Math.min(0.6, 0.3 + (hoursSinceUpdate / 24 * 0.01));
+      basePrice = (spot.price_per_night * (1 - marketWeight)) + (marketAverage * marketWeight);
+    }
+
+    // Randomness factor to avoid always suggesting the same price
+    // Will suggest decrease about 40% of the time
+    const randomFactor = 0.95 + (Math.random() * 0.1); // 0.95-1.05
+
+    // Calculate suggested price
+    let suggestedPrice = Math.round(basePrice * seasonalityFactor * demandFactor * amenitiesFactor * randomFactor);
+
+    // Ensure price doesn't change too dramatically (max ±15%)
+    const maxChange = 0.15;
+    const minPrice = Math.round(spot.price_per_night * (1 - maxChange));
+    const maxPrice = Math.round(spot.price_per_night * (1 + maxChange));
+    suggestedPrice = Math.min(Math.max(suggestedPrice, minPrice), maxPrice);
+
+    // Determine whether price should be updated based on the difference
+    const priceDifference = Math.abs(suggestedPrice - spot.price_per_night);
+    const percentChange = priceDifference / spot.price_per_night;
+    const shouldUpdate = percentChange >= 0.05; // Only suggest update if 5% or greater difference
+
+    // Determine primary reason for the suggestion
+    let reason = "";
+    if (suggestedPrice > spot.price_per_night) {
+      if (season === "peak" || season === "holiday") {
+        reason = `Seasonal demand is high (${season} season).`;
+      } else if (demandCategory === "high") {
+        reason = "Your spot has high booking demand.";
+      } else if (marketAverage && marketAverage > spot.price_per_night) {
+        reason = "Similar spots in your area are charging more.";
+      } else {
+        reason = "Based on overall market analysis.";
+      }
+    } else if (suggestedPrice < spot.price_per_night) {
+      if (season === "off-peak") {
+        reason = "Currently in off-peak season.";
+      } else if (demandCategory === "low") {
+        reason = "Bookings have slowed down recently.";
+      } else if (marketAverage && marketAverage < spot.price_per_night) {
+        reason = "Similar spots in your area are charging less.";
+      } else {
+        reason = "More competitive pricing may increase bookings.";
+      }
+    } else {
+      reason = "Your current price is optimal.";
+    }
+
+    // Get min and max for the suggestion range (±5%)
+    const minSuggestion = Math.round(suggestedPrice * 0.95);
+    const maxSuggestion = Math.round(suggestedPrice * 1.05);
+
     res.json({
       suggested_price: suggestedPrice,
+      min_suggestion: minSuggestion,
+      max_suggestion: maxSuggestion,
+      reason: reason,
       market_details: {
-        similar_spots_avg_price: similarSpotsAvgPrice ? Math.round(similarSpotsAvgPrice * 10) / 10 : null,
-        demand_factor: Math.round(demandFactor * 100) / 100,
-        seasonality_factor: Math.round(seasonalityFactor * 100) / 100,
-        amenities_factor: Math.round(amenitiesFactor * 100) / 100,
-        occupancy_rate: 0 // We're not calculating this now
-      }
+        similar_spots_avg_price: marketAverage,
+        demand_factor: parseFloat(demandFactor.toFixed(2)),
+        seasonality_factor: parseFloat(seasonalityFactor.toFixed(2)),
+        amenities_factor: parseFloat(amenitiesFactor.toFixed(2)),
+        occupancy_rate: 0, // We're not calculating this currently
+        similar_spots: relevantSpots.length,
+        market_average: marketAverage,
+        season: season,
+        demand: demandCategory,
+        last_updated: lastUpdateTime.toISOString(),
+        hours_since_update: Math.round(hoursSinceUpdate)
+      },
+      should_update: shouldUpdate
     });
   } catch (error) {
     console.error('Price Suggestion Error:', error);
