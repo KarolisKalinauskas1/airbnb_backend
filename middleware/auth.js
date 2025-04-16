@@ -1,82 +1,96 @@
-const { createClient } = require('@supabase/supabase-js');
+/**
+ * Enhanced Authentication Middleware
+ * 
+ * This middleware handles authentication by verifying Supabase JWT tokens
+ * and providing rate limiting functionality to prevent abuse.
+ */
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-require('dotenv').config();
+const { authClient } = require('../config/supabase');
 
-// Check for environment variables - try different possible key names
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY || 
-                    process.env.SUPABASE_ANON_KEY || 
-                    process.env.SUPABASE_SERVICE_ROLE_KEY;
+// Tracking for rate limiting - prevents abuse
+const requestCounts = {};
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute window
+const RATE_LIMIT_MAX = 60; // 60 requests per minute per IP
 
-// Log the environment variables for debugging
-console.log('Supabase URL:', supabaseUrl ? 'Found' : 'Missing');
-console.log('Supabase Key:', supabaseKey ? 'Found' : 'Missing');
-
-// Initialize Supabase client with the key we found
-let supabase;
-try {
-  // Only try to initialize if we have both URL and key
-  if (supabaseUrl && supabaseKey) {
-    supabase = createClient(supabaseUrl, supabaseKey);
-    console.log('Supabase client initialized successfully');
-  } else {
-    throw new Error('Missing required Supabase configuration');
-  }
-} catch (error) {
-  console.error('Failed to initialize Supabase client:', error.message);
-  // Create a mock client with dummy methods to prevent crashes
-  supabase = {
-    auth: {
-      getUser: async () => ({ data: { user: null }, error: { message: 'Supabase client not initialized' } })
-    }
-  };
-}
-
-// Update the authentication middleware to be more secure
-
+/**
+ * Authentication middleware
+ * Verifies JWT tokens from Supabase and attaches user info to request
+ */
 const authenticate = async (req, res, next) => {
   try {
-    // Extract the token from the Authorization header
-    const authHeader = req.headers.authorization || ''
+    // Basic rate limiting by IP to prevent abuse and infinite loops
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    const now = Date.now();
     
-    if (!authHeader.startsWith('Bearer ')) {
-      console.log('No Bearer token found in Authorization header')
-      return res.status(401).json({ error: 'Authentication required' })
+    // Clean up expired entries to prevent memory leaks
+    Object.keys(requestCounts).forEach(key => {
+      if (now - requestCounts[key].timestamp > RATE_LIMIT_WINDOW) {
+        delete requestCounts[key];
+      }
+    });
+    
+    // Track request count
+    if (!requestCounts[ip]) {
+      requestCounts[ip] = { count: 1, timestamp: now };
+    } else {
+      requestCounts[ip].count++;
     }
     
-    const token = authHeader.split(' ')[1]
+    // Check if rate limit is exceeded
+    if (requestCounts[ip].count > RATE_LIMIT_MAX) {
+      console.log(`Rate limit exceeded for IP ${ip}`);
+      return res.status(429).json({ 
+        error: 'Too many requests, please try again later',
+        retryAfter: Math.ceil((requestCounts[ip].timestamp + RATE_LIMIT_WINDOW - now) / 1000)
+      });
+    }
+    
+    // Extract the token from Authorization header
+    const authHeader = req.headers.authorization || '';
+    
+    if (!authHeader.startsWith('Bearer ')) {
+      console.log('Auth middleware - No Bearer token found in Authorization header');
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    const token = authHeader.split(' ')[1];
     
     if (!token) {
-      console.log('Token not provided')
-      return res.status(401).json({ error: 'Authentication required' })
+      console.log('Auth middleware - Token not provided');
+      return res.status(401).json({ error: 'Authentication required' });
     }
     
     // Verify the token with Supabase
-    const { data: { user }, error } = await supabase.auth.getUser(token)
+    if (!authClient) {
+      console.error('Auth middleware - Supabase auth client not initialized');
+      return res.status(500).json({ error: 'Auth service unavailable' });
+    }
+    
+    const { data: { user }, error } = await authClient.auth.getUser(token);
     
     if (error) {
-      console.log('Token validation error:', error)
-      return res.status(401).json({ error: 'Invalid token' })
+      console.log('Auth middleware - Token validation error:', error);
+      return res.status(401).json({ error: 'Invalid token' });
     }
     
     if (!user) {
-      console.log('No user found for token')
-      return res.status(401).json({ error: 'User not found' })
+      console.log('Auth middleware - No user found for token');
+      return res.status(401).json({ error: 'User not found' });
     }
     
     // Set the user for use in the route handlers
-    req.supabaseUser = user
+    req.supabaseUser = user;
     
-    // Add a timestamp to detect when auth was performed
-    req.authTimestamp = new Date().toISOString()
+    // Add request timestamp for monitoring and debugging
+    req.authTimestamp = new Date().toISOString();
     
     // Continue to the next middleware or route handler
-    next()
+    next();
   } catch (err) {
-    console.error('Authentication error:', err)
-    return res.status(401).json({ error: 'Authentication failed' })
+    console.error('Auth middleware - Authentication error:', err);
+    return res.status(401).json({ error: 'Authentication failed' });
   }
-}
+};
 
-module.exports = authenticate;
+module.exports = { authenticate, prisma };

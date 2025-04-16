@@ -1,21 +1,39 @@
-const { createClient } = require('@supabase/supabase-js')
-require('dotenv').config()
+/**
+ * Supabase Client Configuration - Fixed Version
+ * 
+ * This file provides different Supabase clients based on the access level needed
+ * while preventing circular dependencies.
+ */
+const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config();
 
-// Initialize Supabase client
-const supabaseUrl = process.env.SUPABASE_URL
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+// Extract environment variables
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY;
 
-// Validation
-if (!supabaseUrl || !supabaseServiceKey) {
-  console.error('ERROR: Missing Supabase environment variables')
-  console.error('Please check your .env file and ensure SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set')
-  // Instead of crashing, we'll provide placeholder values that will fail gracefully
-  // This helps identify the issue in the logs rather than crashing at startup
+// Log missing configuration
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error('ERROR: Missing required Supabase configuration!');
+  console.error(`SUPABASE_URL: ${supabaseUrl ? 'Found' : 'MISSING'}`);
+  console.error(`SUPABASE_ANON_KEY: ${supabaseAnonKey ? 'Found' : 'MISSING'}`);
 }
 
-const supabase = createClient(
+// Create admin client using service role - ADMIN OPERATIONS ONLY
+const adminClient = supabaseServiceKey ? createClient(
   supabaseUrl || 'https://placeholder-url.supabase.co',
-  supabaseServiceKey || 'placeholder_key'
-)
+  supabaseServiceKey
+) : null;
 
-module.exports = supabase
+// Create auth client using anon key - FOR USER AUTHENTICATION
+const authClient = supabaseAnonKey ? createClient(
+  supabaseUrl || 'https://placeholder-url.supabase.co',
+  supabaseAnonKey
+) : null;
+
+// Export only what's needed to prevent circular references
+module.exports = {
+  adminClient,     // For server-side admin operations
+  authClient,      // For user authentication
+  supabaseUrl      // For reference in other parts of the app
+};

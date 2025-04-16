@@ -1,54 +1,44 @@
+/**
+ * Authentication Routes
+ * 
+ * Provides endpoints for user authentication operations:
+ * - Sign up
+ * - Sign in
+ * - Password reset
+ * - Token validation
+ */
 const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const { createClient } = require('@supabase/supabase-js');
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// Import Supabase clients from the consolidated config
+const { adminClient } = require('../config/supabase');
 
-// Middleware to protect route with Supabase JWT
-const authenticate = async (req, res, next) => {
-  try {
-    const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-      console.log('No token provided');
-      return res.status(401).json({ error: 'Missing token' });
-    }
+// Import the authentication middleware
+const { authenticate } = require('../middleware/auth');
 
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    
-    if (error) {
-      console.log('Token validation error:', error);
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-    
-    if (!user) {
-      console.log('No user found for token');
-      return res.status(401).json({ error: 'User not found' });
-    }
-
-    req.supabaseUser = user;
-    next();
-  } catch (err) {
-    console.error('Authentication error:', err);
-    return res.status(401).json({ error: 'Authentication failed' });
-  }
-};
-
-// Test endpoint
+/**
+ * @route   GET /api/auth/test
+ * @desc    Test endpoint to verify authentication
+ * @access  Private
+ */
 router.get('/test', authenticate, (req, res) => {
   res.json({ 
     message: 'Auth is working correctly',
-    user: req.supabaseUser 
+    user: {
+      id: req.supabaseUser.id,
+      email: req.supabaseUser.email
+    },
+    timestamp: new Date().toISOString()
   });
 });
 
-// Sign in with email/password
+/**
+ * @route   POST /api/auth/signin
+ * @desc    Sign in with email/password
+ * @access  Public
+ */
 router.post('/signin', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -57,7 +47,7 @@ router.post('/signin', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
     
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await adminClient.auth.signInWithPassword({
       email,
       password
     });
@@ -71,7 +61,11 @@ router.post('/signin', async (req, res) => {
   }
 });
 
-// Sign up with email/password
+/**
+ * @route   POST /api/auth/signup
+ * @desc    Sign up with email/password
+ * @access  Public
+ */
 router.post('/signup', async (req, res) => {
   try {
     const { email, password, full_name } = req.body;
@@ -80,7 +74,7 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
     
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await adminClient.auth.signUp({
       email,
       password,
       options: {
@@ -109,7 +103,11 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// Password reset
+/**
+ * @route   POST /api/auth/reset-password
+ * @desc    Send password reset email
+ * @access  Public
+ */
 router.post('/reset-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -118,7 +116,7 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
     
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    const { error } = await adminClient.auth.resetPasswordForEmail(email, {
       redirectTo: `${process.env.FRONTEND_URL}/reset-password`
     });
     
@@ -131,7 +129,11 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-// Validate JWT token
+/**
+ * @route   GET /api/auth/validate
+ * @desc    Validate JWT token
+ * @access  Public (requires token)
+ */
 router.get('/validate', async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -140,7 +142,7 @@ router.get('/validate', async (req, res) => {
       return res.status(401).json({ error: 'Missing token' });
     }
     
-    const { data, error } = await supabase.auth.getUser(token);
+    const { data, error } = await adminClient.auth.getUser(token);
     
     if (error) {
       return res.status(401).json({ error: 'Invalid token' });
@@ -153,5 +155,4 @@ router.get('/validate', async (req, res) => {
   }
 });
 
-// Expose the router, authenticate middleware, and the prisma instance
 module.exports = router;

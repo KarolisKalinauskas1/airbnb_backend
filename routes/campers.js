@@ -778,23 +778,23 @@ router.put('/:id', upload.array('images', 10), async (req, res) => {
 router.patch('/:id/price', async (req, res) => {
   try {
     const { id } = req.params;
-    const { price_per_night } = req.body;
+    let { price_per_night } = req.body;
     
     // Added more logging for debugging
     console.log('Price update request received:', { id, price_per_night, body: req.body });
+    
     // Check if we received price through price_per_night or price field
-    let priceValue = price_per_night;
-    if (priceValue === undefined && req.body.price !== undefined) {
-      priceValue = req.body.price;
+    if (price_per_night === undefined && req.body.price !== undefined) {
+      price_per_night = req.body.price;
     }
     
-    if (priceValue === undefined || isNaN(parseFloat(priceValue))) {
-      console.error('Invalid price received:', priceValue);
+    if (price_per_night === undefined || isNaN(parseFloat(price_per_night))) {
+      console.error('Invalid price received:', price_per_night);
       return res.status(400).json({ error: 'Valid price is required' });
     }
 
     // Parse the price to a float with 2 decimal places
-    const formattedPrice = parseFloat(parseFloat(priceValue).toFixed(2));
+    const formattedPrice = parseFloat(parseFloat(price_per_night).toFixed(2));
     
     // Enforce a minimum price
     if (formattedPrice < 5) {
@@ -807,6 +807,7 @@ router.patch('/:id/price', async (req, res) => {
     }
     
     console.log(`Updating price for spot ${id} to ${formattedPrice}`);
+    
     // Update the spot with new price
     const updatedSpot = await prisma.camping_spot.update({
       where: { camping_spot_id: parseInt(id) },

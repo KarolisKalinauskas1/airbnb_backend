@@ -105,4 +105,118 @@ router.post('/field-test', async (req, res) => {
   }
 });
 
+// Simple diagnostic endpoint for content type testing
+router.get('/content-types', (req, res) => {
+  res.json({
+    success: true,
+    requestHeaders: {
+      accept: req.headers.accept,
+      contentType: req.headers['content-type']
+    },
+    responseHeaders: {
+      contentType: res.getHeader('Content-Type')
+    },
+    message: 'This endpoint validates proper JSON content negotiation'
+  });
+});
+
+// Echo endpoint to test request/response
+router.post('/echo', (req, res) => {
+  res.json({
+    success: true,
+    requestMethod: req.method,
+    requestHeaders: req.headers,
+    requestBody: req.body,
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
+ * Diagnostics endpoints for debugging API issues
+ */
+
+// Test JSON content negotiation
+router.get('/content-type-test', (req, res) => {
+  res.json({
+    success: true,
+    requestHeaders: {
+      accept: req.headers.accept,
+      contentType: req.headers['content-type']
+    },
+    responseHeaders: {
+      contentType: res.getHeader('Content-Type')
+    },
+    message: 'If you can see this as JSON, content negotiation is working correctly'
+  });
+});
+
+// Echo back the request details for debugging
+router.post('/echo', (req, res) => {
+  res.json({
+    success: true,
+    method: req.method,
+    path: req.path,
+    headers: req.headers,
+    query: req.query,
+    body: req.body
+  });
+});
+
+// Basic health check endpoint
+router.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    acceptHeader: req.headers.accept,
+    contentType: res.getHeader('Content-Type')
+  });
+});
+
+// Content negotiation test
+router.get('/content-test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Content negotiation is working correctly',
+    requestInfo: {
+      method: req.method,
+      path: req.path,
+      fullUrl: req.protocol + '://' + req.get('host') + req.originalUrl,
+      headers: {
+        accept: req.headers.accept,
+        contentType: req.headers['content-type'],
+        xRequestedWith: req.headers['x-requested-with']
+      }
+    },
+    responseHeaders: {
+      contentType: res.getHeader('Content-Type')
+    }
+  });
+});
+
+// CORS test
+router.get('/cors-test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'CORS is configured correctly',
+    requestOrigin: req.headers.origin,
+    responseHeaders: {
+      'access-control-allow-origin': res.getHeader('Access-Control-Allow-Origin'),
+      'access-control-allow-credentials': res.getHeader('Access-Control-Allow-Credentials'),
+      'access-control-allow-methods': res.getHeader('Access-Control-Allow-Methods'),
+      'access-control-allow-headers': res.getHeader('Access-Control-Allow-Headers')
+    }
+  });
+});
+
+// Test middleware chain
+router.get('/middleware-test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Middleware chain is working correctly',
+    path: req.path,
+    // Include any request processing info added by middleware
+    middlewareInfo: req.middlewareInfo || 'No middleware info available'
+  });
+});
+
 module.exports = router;

@@ -2,9 +2,50 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const dashboardRateLimiter = require('../middleware/dashboardRateLimiter');
+const { debug, errorWithContext } = require('../utils/logger');
+
+// Robust server-side caching
+const dashboardCache = new Map();
+const CACHE_DURATION_MS = 60000; // 1 minute cache for normal requests
+const FORCE_REFRESH_CACHE_DURATION_MS = 10000; // 10 second cache for forced refreshes
+
+// Apply dashboard-specific rate limiter instead of the global one
+router.use(dashboardRateLimiter);
+
+// Health endpoint for checking dashboard service
+router.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Root endpoint to avoid 404 errors
+router.get('/', (req, res) => {
+  // Simply redirect to analytics endpoint
+  res.redirect('/api/dashboard/analytics');
+});
 
 router.get('/analytics', async (req, res) => {
   try {
+    // Generate a cache key based on user ID if available
+    const userId = req.user?.id || 'guest';
+    const isForceRefresh = req.query.refresh === 'true';
+    const cacheKey = `analytics_${userId}`;
+    const now = Date.now();
+    
+    // Use different cache durations based on refresh type
+    const cacheDuration = isForceRefresh 
+      ? FORCE_REFRESH_CACHE_DURATION_MS 
+      : CACHE_DURATION_MS;
+    
+    // Check if we have a valid cached response
+    if (!isForceRefresh && dashboardCache.has(cacheKey)) {
+      const cachedData = dashboardCache.get(cacheKey);
+      if (now - cachedData.timestamp < cacheDuration) {
+        debug('Dashboard', 'Serving cached dashboard data');
+        return res.json(cachedData.data);
+      }
+    }
+    
     const today = new Date();
     const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
@@ -148,7 +189,8 @@ router.get('/analytics', async (req, res) => {
     );
 
     // Format response
-    res.json({
+    const responseData = {
+      totalSpots: spotStats.length,
       revenue: {
         total: Number(bookingStats[0].total_revenue) || 0,
         monthly: Number(bookingStats[0].monthly_revenue) || 0,
@@ -158,10 +200,10 @@ router.get('/analytics', async (req, res) => {
         cancelled: Number(bookingStats[0].cancelled_revenue) || 0
       },
       bookings: {
-        total: Number(bookingStats[0].total_bookings), // Only counts confirmed and completed
+        total: Number(bookingStats[0].total_bookings),
         monthly: Number(bookingStats[0].monthly_bookings),
         averageDuration: Number(bookingStats[0].average_duration) || 0,
-        occupancyRate: averageOccupancyRate, // Includes unavailable periods
+        occupancyRate: averageOccupancyRate,
         growth: Number(bookingStats[0].bookings_growth) || 0,
         active: spotPerformance.reduce((sum, spot) => sum + spot.bookings, 0)
       },
@@ -177,9 +219,17 @@ router.get('/analytics', async (req, res) => {
         status: b.status_booking_transaction.status.toLowerCase(),
         cancelled: b.status_id === 3
       }))
+    };
+    
+    // Cache the response
+    dashboardCache.set(cacheKey, {
+      timestamp: now,
+      data: responseData
     });
+    
+    res.json(responseData);
   } catch (error) {
-    console.error('Dashboard Error:', error);
+    errorWithContext('Dashboard', error, { path: '/analytics' });
     res.status(500).json({ error: 'Failed to fetch dashboard data' });
   }
 });

@@ -1,31 +1,65 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path'); // Add this import for the path module
+const path = require('path');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
+const { debug } = require('../utils/logger');
 
 /* GET home page. */
-router.get('/', function(req, res, next) {
-  // If requesting JSON, return API info
-  if (req.headers.accept && req.headers.accept.includes('application/json')) {
-    return res.json({ 
-      title: 'Airbnb for Camping API',
-      status: 'running',
-      version: '1.0.0'
-    });
+router.get('/', function(req, res) {
+  debug('Routes', 'Handling root request');
+  
+  // Check if the request wants JSON or HTML
+  const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
+  
+  if (wantsJson) {
+    return res.json({ status: 'ok', version: process.env.npm_package_version || '1.0.0' });
   }
   
-  // For HTML requests, serve the SPA
+  // Only redirect HTML requests, not API requests
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
-// Health check endpoint
-router.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'ok', 
-    message: 'Server is running',
-    timestamp: new Date().toISOString()
+/* Health check endpoint */
+router.get('/health', function(req, res) {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    acceptHeader: req.headers.accept
   });
+});
+
+/* GET dashboard redirects */
+// Update these routes to avoid redirection and instead serve the SPA directly
+router.get('/dashboard', function(req, res) {
+  // If requesting JSON, forward to the API
+  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+    return res.redirect('/api/dashboard/analytics');
+  }
+  
+  // Otherwise, serve the SPA
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+
+router.get('/dashboard/analytics', function(req, res) {
+  // If requesting JSON, forward to the API
+  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+    return res.redirect('/api/dashboard/analytics');
+  }
+  
+  // Otherwise, serve the SPA
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+
+router.get('/dashboard/spots', function(req, res) {
+  // If requesting JSON, forward to the API
+  if (req.headers.accept && req.headers.accept.includes('application/json')) {
+    return res.redirect('/api/dashboard/spots');
+  }
+  
+  // Otherwise, serve the SPA
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
 // Test endpoint for CORS
@@ -64,17 +98,10 @@ router.get('/db-check', async (req, res) => {
   }
 });
 
-// Add a catch-all route for SPA navigation that EXCLUDES API paths
-router.get('*', (req, res, next) => {
-  // Skip handling for API and other specific routes
-  if (req.path.startsWith('/api') || 
-      req.path.startsWith('/camping-spots') || 
-      req.path.startsWith('/users') || 
-      req.path.startsWith('/auth') ||
-      req.path.startsWith('/bookings') ||
-      req.path.startsWith('/health') ||
-      req.path.startsWith('/dashboard') ||
-      req.path.startsWith('/webhooks')) {
+// This should be the LAST route
+router.get('*', function(req, res, next) {
+  // Skip handling for API routes
+  if (req.path.startsWith('/api/')) {
     return next();
   }
   
