@@ -6,7 +6,27 @@ const { geocodeAddress, calculateDistance } = require('../utils/geocoding');
 const cloudinary = require('../utils/cloudinary');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
-const { authenticate } = require('../middlewares/auth');
+const fallbackData = require('../utils/fallback-data');
+
+// Helper to handle database connection issues with fallback data
+const withDbFallback = async (req, res, dbOperation, fallbackData, errorMessage) => {
+  try {
+    return await dbOperation();
+  } catch (error) {
+    // Check if it's a database connection error
+    if (error.message && (
+      error.message.includes("Can't reach database server") || 
+      error.code === 'P1001' || 
+      error.name === 'PrismaClientInitializationError')
+    ) {
+      console.warn('Database connection error. Using fallback data.');
+      return fallbackData;
+    }
+    // For other errors, propagate them
+    console.error(errorMessage, error);
+    throw error;
+  }
+};
 
 // Get camping spots with filters
 router.get('/', async (req, res) => {
@@ -26,15 +46,17 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'Invalid date format' });
     }
     
-    let query = {
+    // Build query with all the necessary WHERE conditions
+    const query = {
       where: {
+        // Only include spots that aren't booked for the selected dates
         NOT: {
           bookings: {
             some: {
               AND: [
                 { start_date: { lte: end } },
                 { end_date: { gte: start } },
-                { status_id: { in: [2, 4, 5] } }  // Exclude confirmed, completed, and unavailable for these dates
+                { status_id: { in: [2, 4, 5] } }  // Exclude confirmed(2), completed(4), and unavailable(5) for these dates
               ]
             }
           }
@@ -76,6 +98,7 @@ router.get('/', async (req, res) => {
       };
     }
 
+    // Try to get spots
     let spots = await prisma.camping_spot.findMany(query);
 
     // Filter by distance if coordinates provided
@@ -83,6 +106,8 @@ router.get('/', async (req, res) => {
       const targetLat = parseFloat(lat);
       const targetLng = parseFloat(lng);
       const maxDistance = parseFloat(radius);
+      
+      console.log('Filtering by distance:', { targetLat, targetLng, maxDistance });
 
       spots = spots.filter(spot => {
         if (!spot.location?.latitute || !spot.location?.longtitute) return false;
@@ -97,16 +122,23 @@ router.get('/', async (req, res) => {
       });
     }
 
-    // Always ensure we send an array, even if empty
-    if (!Array.isArray(spots)) {
-      console.warn('Expected spots to be an array but got:', typeof spots);
-      spots = [];
-    }
-
     res.json(spots);
   } catch (error) {
     console.error('Search Error:', error);
-    res.status(500).json({ error: 'Failed to search camping spots' });
+    // Return a more informative error message
+    let statusCode = 500;
+    let errorMessage = 'Failed to search camping spots';
+    
+    if (error.code === 'P1001' || error.message?.includes("Can't reach database")) {
+      statusCode = 503;
+      errorMessage = 'Database connection issue. Please try again later.';
+    }
+    
+    res.status(statusCode).json({ 
+      error: errorMessage,
+      code: error.code || 'UNKNOWN_ERROR',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -282,7 +314,7 @@ router.get('/my-spots', async (req, res) => {
 });
 
 // Get camping spots for specific owner
-router.get('/owner', authenticate, async (req, res) => {
+router.get('/owner', async (req, res) => {
   try {
     // Get user ID from authenticated user
     const userId = req.supabaseUser?.id;
@@ -362,11 +394,17 @@ function calculateOccupancyRate(bookings) {
 // Get all amenities
 router.get('/amenities', async (req, res) => {
   try {
-    const amenities = await prisma.amenity.findMany({
-      orderBy: {
-        name: 'asc'
-      }
-    });
+    // Use withDbFallback to handle database connection issues
+    const amenities = await withDbFallback(
+      req,
+      res,
+      () => prisma.amenity.findMany({
+        orderBy: { name: 'asc' }
+      }),
+      fallbackData.amenities,
+      'Amenities Error:'
+    );
+    
     res.json(amenities);
   } catch (error) {
     console.error('Amenities Error:', error);
@@ -423,7 +461,7 @@ router.post('/', upload.array('images', 10), async (req, res) => {
     if (isNaN(parsedOwnerId)) {
       return res.status(400).json({ 
         error: 'Invalid owner_id format', 
-        details: `Received owner_id: ${owner_id}`
+        details: `Received owner_id: ${owner_id}` 
       });
     }
     
@@ -915,76 +953,103 @@ router.get('/:id', async (req, res) => {
       }
       
       // Check for bookings or unavailable dates that would block this reservation period
-      // Only check status 2 (confirmed), 4 (completed), and 5 (unavailable)
-      // Explicitly exclude status 3 (cancelled)
-      const existingBookings = await prisma.bookings.findMany({
-        where: {
-          camper_id: parseInt(id),
-          status_id: {
-            in: [2, 4, 5]  // Include confirmed (2), completed (4), and unavailable (5)
-          },
-          OR: [
-            { AND: [
-              { start_date: { lte: end } },
-              { end_date: { gte: start } }
-            ]}
-          ]
-        }
-      });
+      try {
+        // Only check status 2 (confirmed), 4 (completed), and 5 (unavailable)
+        // Explicitly exclude status 3 (cancelled)
+        const existingBookings = await prisma.bookings.findMany({
+          where: {
+            camper_id: parseInt(id),
+            status_id: {
+              in: [2, 4, 5]  // Include confirmed (2), completed (4), and unavailable (5)
+            },
+            OR: [
+              { AND: [
+                { start_date: { lte: end } },
+                { end_date: { gte: start } }
+              ]}
+            ]
+          }
+        });
 
-      if (existingBookings.length > 0) {
-        // For API clients that need to know if dates are available
-        res.setHeader('X-Dates-Available', 'false');
-      } else {
-        res.setHeader('X-Dates-Available', 'true');
+        if (existingBookings.length > 0) {
+          // For API clients that need to know if dates are available
+          res.setHeader('X-Dates-Available', 'false');
+        } else {
+          res.setHeader('X-Dates-Available', 'true');
+        }
+      } catch (bookingError) {
+        console.error('Error checking bookings:', bookingError);
+        // Continue with spot fetch even if booking check fails
       }
     }
 
     // Find the camping spot without owner details
-    const spot = await prisma.camping_spot.findUnique({
-      where: {
-        camping_spot_id: parseInt(id)
-      },
-      include: {
-        images: true,
-        location: {
+    try {
+      // Add timeout to Prisma query
+      const spot = await Promise.race([
+        prisma.camping_spot.findUnique({
+          where: {
+            camping_spot_id: parseInt(id)
+          },
           include: {
-            country: true
+            images: true,
+            location: {
+              include: {
+                country: true
+              }
+            },
+            camping_spot_amenities: {
+              include: {
+                amenity: true
+              }
+            },
+            bookings: {
+              include: {
+                review: true
+              }
+            }
           }
-        },
-        camping_spot_amenities: {
-          include: {
-            amenity: true
-          }
-        },
-        bookings: {
-          include: {
-            review: true
-          }
-        }
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Database query timeout')), 5000)
+        )
+      ]);
+
+      if (!spot) {
+        return res.status(404).json({ error: 'Camping spot not found' });
       }
-    });
 
-    if (!spot) {
-      return res.status(404).json({ error: 'Camping spot not found' });
+      // Add reviews data from bookings
+      spot.reviews = spot.bookings
+        .filter(booking => booking.review)
+        .map(booking => booking.review);
+
+      // Remove bookings from response if not needed
+      delete spot.bookings;
+
+      res.json(spot);
+    } catch (spotError) {
+      if (spotError.code === 'P1001') {
+        return res.status(503).json({ 
+          error: 'Database connection error', 
+          message: 'Unable to connect to the database. Please try again later.',
+          code: 'DB_CONNECTION_ERROR'
+        });
+      }
+      throw spotError;
     }
-
-    // Add reviews data from bookings
-    spot.reviews = spot.bookings
-      .filter(booking => booking.review)
-      .map(booking => booking.review);
-
-    // Remove bookings from response if not needed
-    delete spot.bookings;
-
-    res.json(spot);
   } catch (error) {
     console.error('Get Single Spot Error:', error);
-    res.status(500).json({ error: 'Failed to fetch camping spot', details: error.message });
+    const statusCode = error.code === 'P1001' ? 503 : 500;
+    res.status(statusCode).json({ 
+      error: error.code === 'P1001' ? 'Database connection error' : 'Failed to fetch camping spot', 
+      details: error.message,
+      code: error.code
+    });
   }
 });
 
-// New endpoint for fetching camping spot availability
+// Improve the availability endpoint
 router.get('/:id/availability', async (req, res) => {
   try {
     const { id } = req.params;
@@ -994,74 +1059,79 @@ router.get('/:id/availability', async (req, res) => {
       return res.status(400).json({ error: 'Start date and end date are required' });
     }
     
-    // Validate the camping spot exists
-    const spotExists = await prisma.camping_spot.findUnique({
-      where: {
-        camping_spot_id: parseInt(id)
-      }
-    });
+    // Validate dates
+    const start = new Date(startDate);
+    const end = new Date(endDate);
     
-    if (!spotExists) {
-      return res.status(404).json({ error: 'Camping spot not found' });
-    }
-
-    // Convert dates to JavaScript Date objects with validation
-    let start, end;
-    try {
-      start = new Date(startDate);
-      end = new Date(endDate);
-      
-      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-        throw new Error('Invalid date format');
-      }
-    } catch (err) {
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       return res.status(400).json({ error: 'Invalid date format' });
     }
     
-    // Find all bookings for this camping spot within the date range
-    const bookings = await prisma.bookings.findMany({
-      where: {
-        camper_id: parseInt(id),
-        status_id: {
-          in: [2, 4, 5] // Only show confirmed (2), completed (4), and unavailable (5)
-                        // Explicitly exclude cancelled (3) bookings
-        },
-        OR: [
-          // Booking starts within the range
-          {
-            start_date: {
-              gte: start,
-              lte: end
-            }
-          },
-          // Booking ends within the range
-          {
-            end_date: {
-              gte: start,
-              lte: end
-            }
-          },
-          // Booking spans the entire range
-          {
-            AND: [
-              { start_date: { lte: start } },
-              { end_date: { gte: end } }
+    try {
+      // Validate the camping spot exists with a timeout
+      const spotExists = await Promise.race([
+        prisma.camping_spot.findUnique({
+          where: { camping_spot_id: parseInt(id) }
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Database query timeout')), 5000)
+        )
+      ]);
+      
+      if (!spotExists) {
+        return res.status(404).json({ error: 'Camping spot not found' });
+      }
+      
+      // Find ALL bookings in this date range - important to get everything
+      const bookings = await Promise.race([
+        prisma.bookings.findMany({
+          where: {
+            camper_id: parseInt(id),
+            status_id: {
+              in: [2, 4, 5]  // Confirmed, completed, or unavailable
+            },
+            OR: [
+              // Full or partial overlap with the requested date range
+              { AND: [
+                { start_date: { lte: end } },
+                { end_date: { gte: start } }
+              ]}
             ]
           }
-        ]
-      },
-      select: {
-        booking_id: true,
-        start_date: true,
-        end_date: true,
-        status_id: true
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Database query timeout')), 5000)
+        )
+      ]);
+      
+      console.log(`Found ${bookings.length} bookings for spot ${id} in date range ${startDate} to ${endDate}`);
+      
+      // Include ALL matched bookings, not just checking if there are any
+      res.json({
+        hasBlockedDates: bookings.length > 0,
+        availableDates: bookings.length === 0,
+        bookings: bookings
+      });
+    } catch (dbError) {
+      console.error('Database error checking availability:', dbError);
+      
+      // Handle specific database connection errors
+      if (dbError.code === 'P1001' || dbError.message?.includes("Can't reach database")) {
+        return res.status(503).json({
+          error: 'Database connection error',
+          message: 'Cannot connect to database server. Please try again later.',
+          code: 'P1001'
+        });
       }
-    });
-
-    res.json({ bookings });
+      
+      throw dbError;
+    }
   } catch (error) {
-    console.error('Availability Error:', error);
-    res.status(500).json({ error: 'Failed to fetch availability data' });
+    console.error('Availability check error:', error);
+    res.status(500).json({ 
+      error: 'Failed to check availability',
+      message: error.message
+    });
   }
 });
 

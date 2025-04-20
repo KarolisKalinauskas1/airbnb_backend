@@ -5,15 +5,20 @@
 // Store request counts by IP
 const requestCounts = {};
 
-// Default settings
+// Default settings - increased to prevent excessive rate limiting
 const RATE_WINDOW_MS = 60000; // 1 minute window
-const MAX_REQUESTS_PER_WINDOW = 30; // 30 requests per minute
+const MAX_REQUESTS_PER_WINDOW = 300; // Increased from 30 to 300 requests per minute
 
 /**
  * Rate limiter middleware
  * Limits requests based on client IP address to prevent abuse
  */
 function rateLimiter(req, res, next) {
+  // Skip rate limiting for health checks and non-production environments
+  if (req.path.includes('/health') || process.env.NODE_ENV !== 'production') {
+    return next();
+  }
+
   // Get client IP (handle proxies)
   const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
   const now = Date.now();

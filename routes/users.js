@@ -1,91 +1,122 @@
-const express = require('express')
-const router = express.Router()
-const { PrismaClient } = require('@prisma/client')
-const prisma = new PrismaClient()
-const { createClient } = require('@supabase/supabase-js')
-require('dotenv').config()
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-)
+const express = require('express');
+const router = express.Router();
+// Import our database connection manager
+const db = require('../config/database');
+const { authenticate } = require('../middlewares/auth');
+const { authClient, isConfigured } = require('../config/supabase');
 
 // Fix the POST route
 router.post('/', async (req, res) => {
-  const { email, full_name, is_seller, license, auth_user_id } = req.body
+  const { email, full_name, is_seller, license, auth_user_id } = req.body;
   try {
-    const existing = await prisma.public_users.findUnique({ where: { email } })
-    if (existing) return res.status(200).json({ message: 'User already exists' })
-
-    const newUser = await prisma.public_users.create({
-      data: {
-        email,
-        full_name,
-        date_of_birth: 'unknown',
-        verified: 'no',
-        isowner: is_seller === true ? '1' : '0', // Fix: Ensure boolean comparison
-        created_at: new Date(),
-        auth_user_id // Add this field
-      }
-    })
-
-    if (is_seller) {
-      await prisma.owner.create({
-        data: {
-          owner_id: newUser.user_id,
-          license: license || 'none'
-        }
-      })
+    // Check if database is connected
+    const isConnected = await db.isConnected();
+    if (!isConnected) {
+      return res.status(503).json({ 
+        error: 'Database service unavailable',
+        message: 'Database connection failed. Please try again later.'
+      });
     }
 
-    res.status(201).json({ message: 'User created' })
-  } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: 'Failed to create user' })
-  }
-})
+    const existing = await db.execute(async () => {
+      return await db.client.public_users.findUnique({ where: { email } });
+    });
+    
+    if (existing) return res.status(200).json({ message: 'User already exists' });
 
-// Fix the sync route
-router.post('/sync', async (req, res) => {
-  const { email, full_name, is_seller, license, auth_user_id } = req.body
-
-  try {
-    const existing = await prisma.public_users.findUnique({ where: { email } })
-
-    if (!existing) {
-      const newUser = await prisma.public_users.create({
+    const newUser = await db.execute(async () => {
+      return await db.client.public_users.create({
         data: {
           email,
           full_name,
           date_of_birth: 'unknown',
           verified: 'no',
-          isowner: is_seller === true ? '1' : '0', // Fix: Ensure boolean comparison
+          isowner: is_seller === true ? '1' : '0',
           created_at: new Date(),
           auth_user_id
         }
-      })
+      });
+    });
 
-      if (is_seller) {
-        await prisma.owner.create({
+    if (!newUser) {
+      return res.status(500).json({ error: 'Failed to create user in the database' });
+    }
+
+    if (is_seller) {
+      await db.execute(async () => {
+        return await db.client.owner.create({
           data: {
             owner_id: newUser.user_id,
             license: license || 'none'
           }
-        })
-      }
-
-      return res.status(201).json({ message: 'User synced and added' })
+        });
+      });
     }
 
-    res.status(200).json({ message: 'User already exists' })
+    res.status(201).json({ message: 'User created' });
   } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: 'Failed to sync user' })
+    console.error('Failed to create user:', err);
+    res.status(500).json({ error: 'Failed to create user', details: err.message });
   }
-})
+});
 
-// Import the consolidated middleware
-const { authenticate } = require('../middlewares/auth');
+// Fix the sync route
+router.post('/sync', async (req, res) => {
+  const { email, full_name, is_seller, license, auth_user_id } = req.body;
+
+  try {
+    // Check if database is connected
+    const isConnected = await db.isConnected();
+    if (!isConnected) {
+      return res.status(503).json({ 
+        error: 'Database service unavailable',
+        message: 'Database connection failed. Please try again later.'
+      });
+    }
+
+    const existing = await db.execute(async () => {
+      return await db.client.public_users.findUnique({ where: { email } });
+    });
+
+    if (!existing) {
+      const newUser = await db.execute(async () => {
+        return await db.client.public_users.create({
+          data: {
+            email,
+            full_name,
+            date_of_birth: 'unknown',
+            verified: 'no',
+            isowner: is_seller === true ? '1' : '0',
+            created_at: new Date(),
+            auth_user_id
+          }
+        });
+      });
+
+      if (!newUser) {
+        return res.status(500).json({ error: 'Failed to create user in the database' });
+      }
+
+      if (is_seller) {
+        await db.execute(async () => {
+          return await db.client.owner.create({
+            data: {
+              owner_id: newUser.user_id,
+              license: license || 'none'
+            }
+          });
+        });
+      }
+
+      return res.status(201).json({ message: 'User synced and added' });
+    }
+
+    res.status(200).json({ message: 'User already exists' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to sync user' });
+  }
+});
 
 // GET full user info by Supabase email
 router.get('/full-info', authenticate, async (req, res) => {
@@ -96,90 +127,69 @@ router.get('/full-info', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
 
-    // Add error handling and logging
-    console.log(`Fetching user info for email: ${email}`);
+    // Check if database is connected
+    const isConnected = db.isConnected;
+    if (!isConnected) {
+      return res.status(503).json({ 
+        error: 'Database service unavailable',
+        message: 'Database connection failed. Please try again later.'
+      });
+    }
 
-    const results = await prisma.$queryRawUnsafe(`
-      SELECT
-        u.user_id,
-        u.full_name,
-        u.email,
-        u.isowner,
-        COALESCE(
-          json_agg(
-            CASE WHEN b.booking_id IS NOT NULL THEN
-              json_build_object(
-                'booking_id', b.booking_id,
-                'start_date', b.start_date,
-                'end_date', b.end_date,
-                'cost', b.cost,
-                'number_of_guests', b.number_of_guests,
-                'created_at', b.created_at,
-                'status_id', b.status_id,  /* Add this line to include status_id */
-                'review', CASE
-                  WHEN r.review_id IS NOT NULL THEN json_build_object(
-                    'review_id', r.review_id,
-                    'rating', r.rating,
-                    'comment', r.comment
-                  )
-                  ELSE NULL
-                END,
-                'transaction', (
-                  SELECT json_agg(
-                    json_build_object(
-                      'transaction_id', tr.transaction_id,
-                      'amount', tr.amount,
-                      'status_id', tr.status_id
-                    )
-                  ) 
-                  FROM transaction tr
-                  WHERE tr.booking_id = b.booking_id
-                ),
-                'camping_spot', CASE
-                  WHEN cs.camping_spot_id IS NOT NULL THEN json_build_object(
-                    'camping_spot_id', cs.camping_spot_id,
-                    'title', cs.title,
-                    'description', cs.description,
-                    'max_guests', cs.max_guests,
-                    'price_per_night', cs.price_per_night,
-                    'images', (
-                      SELECT json_agg(
-                        json_build_object(
-                          'image_id', i.image_id,
-                          'image_url', i.image_url
-                        )
-                      )
-                      FROM images i
-                      WHERE i.camping_id = cs.camping_spot_id
-                    )
-                  )
-                  ELSE NULL
-                END
-              )
-            ELSE NULL
-            END
-          ) FILTER (WHERE b.booking_id IS NOT NULL), 
-          '[]'::json
-        ) AS bookings
-      FROM public.users u
-      LEFT JOIN bookings b ON u.user_id = b.user_id
-      LEFT JOIN review r ON b.booking_id = r.booking_id
-      LEFT JOIN camping_spot cs ON b.camper_id = cs.camping_spot_id
-      LEFT JOIN transaction t ON b.booking_id = t.booking_id
-      WHERE u.email = $1
-      GROUP BY u.user_id, u.full_name, u.email, u.isowner
-    `, email);
+    // Find the user
+    const user = await db.execute(
+      async (prisma) => await prisma.public_users.findFirst({ where: { email } })
+    );
 
-    if (!results || results.length === 0) {
-      console.log(`No user found for email: ${email}`);
+    if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    console.log(`User found: ${results[0].user_id}`);
-    res.json(results[0]);
-  } catch (error) {
-    console.error('Error fetching user info:', error);
-    res.status(500).json({ error: 'Internal server error', details: error.message });
+    // Get user's bookings
+    const bookings = await db.execute(
+      async (prisma) => await prisma.bookings.findMany({
+        where: { user_id: user.user_id },
+        include: {
+          status_booking_transaction: true,
+          camping_spot: {
+            include: {
+              images: true,
+              location: {
+                include: { country: true }
+              }
+            }
+          }
+        }
+      }),
+      { defaultReturn: [] }
+    );
+
+    // Return user with bookings
+    return res.json({
+      ...user,
+      bookings: Array.isArray(bookings) ? bookings.map(b => ({
+        booking_id: b.booking_id,
+        start_date: b.start_date,
+        end_date: b.end_date,
+        number_of_guests: b.number_of_guests,
+        cost: b.cost,
+        created_at: b.created_at,
+        status: b.status_booking_transaction?.name || 'Unknown',
+        camping_spot: {
+          camping_spot_id: b.camping_spot.camping_spot_id,
+          title: b.camping_spot.title,
+          price_per_night: b.camping_spot.price_per_night,
+          image: b.camping_spot.images?.[0]?.url || null,
+          location: b.camping_spot.location ? {
+            city: b.camping_spot.location.city,
+            country: b.camping_spot.location.country?.name || 'Unknown'
+          } : null
+        }
+      })) : []
+    });
+  } catch (err) {
+    console.error('Error fetching user details:', err);
+    res.status(500).json({ error: 'Failed to fetch user details' });
   }
 });
 
@@ -189,9 +199,20 @@ router.patch('/:id', async (req, res) => {
   const { phone_number } = req.body;
 
   try {
-    const updatedUser = await prisma.public_users.update({
-      where: { user_id: parseInt(id) },
-      data: { phone_number }
+    // Check if database is connected
+    const isConnected = await db.isConnected();
+    if (!isConnected) {
+      return res.status(503).json({ 
+        error: 'Database service unavailable',
+        message: 'Database connection failed. Please try again later.'
+      });
+    }
+
+    const updatedUser = await db.execute(async () => {
+      return await db.client.public_users.update({
+        where: { user_id: parseInt(id) },
+        data: { phone_number }
+      });
     });
 
     res.json(updatedUser);
@@ -219,4 +240,4 @@ router.get('/auth-test', authenticate, async (req, res) => {
   }
 });
 
-module.exports = router
+module.exports = router;

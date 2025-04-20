@@ -1,73 +1,56 @@
 /**
- * Content Negotiation Middleware
- * Ensures proper content types for API requests
+ * Improved content negotiation middleware
+ * Ensures proper JSON responses for API requests
  */
 function contentNegotiation(req, res, next) {
-  // Check if this is an API request or JSON request
-  const isApiRequest = req.path.startsWith('/api/') || 
-                       (req.headers.accept && req.headers.accept.includes('application/json'));
-
-  // Check if this is a dashboard route that should be handled by the SPA
-  const isDashboardRoute = req.path.startsWith('/dashboard/') || req.path === '/dashboard';
+  // Check if this is an API request based on path or headers
+  const isApiRequest = 
+    req.path.startsWith('/api/') ||
+    req.path.match(/^\/(camping-spots|users|bookings|dashboard|auth)\//) ||
+    (req.headers.accept && req.headers.accept.includes('application/json'));
   
-  // Allow redirects for dashboard routes even if they look like API endpoints
-  if (isDashboardRoute && !req.path.startsWith('/api/dashboard')) {
-    return next();
-  }
-
   if (isApiRequest) {
-    // Set response type to JSON before any handlers run
-    res.setHeader('Content-Type', 'application/json');
-    
-    // Save original methods that might cause issues
+    // For API requests, ensure JSON
     const originalSend = res.send;
-    const originalJson = res.json;
-    const originalRedirect = res.redirect;
-    const originalRender = res.render;
-    
-    // Override res.send to enforce JSON for API routes
     res.send = function(body) {
-      // If we're sending HTML but this is an API request, convert to JSON error
-      if (typeof body === 'string' && body.trim().startsWith('<!DOCTYPE html')) {
-        console.error('Prevented HTML response for API request:', req.path);
-        return res.status(406).json({
-          error: 'Not Acceptable',
-          message: 'This API endpoint does not serve HTML content',
-          path: req.path
-        });
+      // If we're trying to send HTML but this is an API request
+      if (typeof body === 'string' && body.includes('<!DOCTYPE html>')) {
+        console.warn(`Prevented HTML response for API request: ${req.path}`);
+        
+        // Force JSON response
+        res.setHeader('Content-Type', 'application/json');
+        
+        // Handle different status codes appropriately
+        if (res.statusCode === 404) {
+          return originalSend.call(this, JSON.stringify({ 
+            error: 'Not Found',
+            path: req.path,
+            message: 'The requested resource was not found'
+          }));
+        } else {
+          return originalSend.call(this, JSON.stringify({ 
+            error: 'API Error',
+            message: 'The API endpoint returned HTML instead of JSON',
+            path: req.path
+          }));
+        }
       }
       
-      // Ensure content type is set for every response
-      this.setHeader('Content-Type', 'application/json');
+      // Make sure Content-Type is set for all API responses
+      if (!res.get('Content-Type')) {
+        res.setHeader('Content-Type', 'application/json');
+      }
       
-      // Call the original send method
       return originalSend.apply(this, arguments);
     };
     
-    // Override res.json to ensure content type
-    res.json = function(body) {
-      this.setHeader('Content-Type', 'application/json');
-      return originalJson.apply(this, arguments);
-    };
-    
-    // Prevent redirects for API requests
-    res.redirect = function() {
-      console.error(`Prevented redirect for API request: ${req.path} -> ${arguments[0]}`);
-      return res.status(406).json({
-        error: 'Not Acceptable',
-        message: 'This API endpoint does not support redirects',
-        path: req.path,
-        redirectTarget: arguments[0]
-      });
-    };
-    
-    // Prevent template rendering for API requests
-    res.render = function() {
-      console.error(`Prevented template rendering for API request: ${req.path}`);
-      return res.status(406).json({
-        error: 'Not Acceptable',
-        message: 'This API endpoint does not support HTML templates',
-        path: req.path
+    // Also prevent redirects for API requests
+    const originalRedirect = res.redirect;
+    res.redirect = function(url) {
+      console.warn(`Prevented redirect for API request: ${req.path} -> ${url}`);
+      return res.status(200).json({ 
+        redirectUrl: url,
+        message: "API endpoints don't support redirects. This is the target URL."
       });
     };
   }

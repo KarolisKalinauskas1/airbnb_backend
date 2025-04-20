@@ -126,13 +126,18 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
       }
     ];
     
+    // Get the frontend URL from environment variables or use a default
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+    
+    console.log('Using frontend URL for redirects:', frontendUrl);
+    
     // Create the Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/camper/${camper_id}`,
+      success_url: `${frontendUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/booking-failed`,
       metadata: {
         camper_id: camper_id.toString(),
         user_id: user_id.toString(),
@@ -146,6 +151,7 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
     });
     
     console.log('Created checkout session:', session.id);
+    console.log('Success URL:', `${frontendUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`);
     
     // Return the checkout URL to redirect the user to Stripe
     res.json({ url: session.url });
@@ -169,29 +175,17 @@ router.get('/success', async (req, res) => {
     
     console.log(`Processing success with session ID: ${session_id}`);
     
-    // Add an internal rate limiter to prevent duplicate processing
-    const processKey = `processed_${session_id}`;
-    if (global[processKey]) {
-      console.log(`Session ${session_id} already being processed, preventing duplicate`);
-      return res.json({ 
-        booking_id: global[processKey],
-        already_processed: true
-      });
-    }
-    
-    // Set a temporary flag to prevent parallel processing
-    global[processKey] = true;
+    // Set proper content type for API response
+    res.setHeader('Content-Type', 'application/json');
     
     try {
-      // First check for existing bookings that match this session's metadata
+      // Retrieve the Stripe session to get metadata
       const session = await stripe.checkout.sessions.retrieve(session_id);
-      
-      // IMPORTANT: Only create booking if payment was successful
-      if (session.payment_status !== 'paid') {
-        console.log(`Session ${session_id} was not paid:`, session.payment_status);
-        delete global[processKey];
-        return res.status(400).json({ error: 'Payment not completed' });
-      }
+      console.log('Retrieved session data:', { 
+        id: session.id,
+        payment_status: session.payment_status,
+        metadata: session.metadata
+      });
       
       // Extract the metadata from the session
       const { 
@@ -199,8 +193,7 @@ router.get('/success', async (req, res) => {
         user_id, 
         start_date, 
         end_date, 
-        number_of_guests,
-        cost
+        number_of_guests
       } = session.metadata;
       
       // Look for existing bookings that match this session's data
@@ -210,8 +203,7 @@ router.get('/success', async (req, res) => {
           user_id: parseInt(user_id),
           start_date: new Date(start_date),
           end_date: new Date(end_date),
-          // Only check recent bookings (created in the last hour)
-          created_at: { gte: new Date(Date.now() - 3600000) }
+          created_at: { gte: new Date(Date.now() - 3600000) } // Last hour
         },
         orderBy: { booking_id: 'desc' }
       });
@@ -219,19 +211,17 @@ router.get('/success', async (req, res) => {
       let booking;
       
       if (existingBookings.length > 0) {
-        // Use the existing booking - don't create a duplicate
         booking = existingBookings[0];
         console.log(`Found existing booking ID: ${booking.booking_id} for session: ${session_id}`);
       } else {
         console.log(`Creating new booking for session ${session_id}`);
         
-        // Get the actual camping spot price to ensure we use the correct amount
+        // Get the actual camping spot price
         const campingSpot = await prisma.camping_spot.findUnique({
           where: { camping_spot_id: parseInt(camper_id) }
         });
         
         if (!campingSpot) {
-          delete global[processKey];
           return res.status(404).json({ error: 'Camping spot not found' });
         }
         
@@ -240,44 +230,43 @@ router.get('/success', async (req, res) => {
         const end = new Date(end_date);
         const nightCount = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
         
-        // Calculate correct base price
+        // Calculate base price
         const actualBasePrice = campingSpot.price_per_night * nightCount;
         
-        // Create a new booking record with correct pricing
-        booking = await prisma.bookings.create({
-          data: {
-            camper_id: parseInt(camper_id),
-            user_id: parseInt(user_id),
-            start_date: new Date(start_date),
-            end_date: new Date(end_date),
-            number_of_guests: parseInt(number_of_guests),
-            cost: actualBasePrice, // Use the calculated price from the actual spot price
-            created_at: new Date(),
-            status_id: 2 // CONFIRMED
-          }
-        });
-        
-        // Create a transaction record for the payment with total from Stripe
-        await prisma.transaction.create({
-          data: {
-            amount: parseFloat(session.amount_total / 100), // Convert from cents
-            status_id: 2, // CONFIRMED
-            booking_id: booking.booking_id
-          }
-        });
-        
-        console.log(`Created new booking ID ${booking.booking_id} for session ${session_id}`);
+        try {
+          // Create a new booking
+          booking = await prisma.bookings.create({
+            data: {
+              camper_id: parseInt(camper_id),
+              user_id: parseInt(user_id),
+              start_date: new Date(start_date),
+              end_date: new Date(end_date),
+              number_of_guests: parseInt(number_of_guests),
+              cost: actualBasePrice,
+              created_at: new Date(),
+              status_id: 2 // CONFIRMED
+            }
+          });
+          
+          // Create a transaction record
+          await prisma.transaction.create({
+            data: {
+              amount: parseFloat(session.amount_total / 100), // Convert from cents
+              status_id: 2, // CONFIRMED
+              booking_id: booking.booking_id
+            }
+          });
+          
+          console.log(`Created new booking ID ${booking.booking_id} for session ${session_id}`);
+        } catch (dbError) {
+          console.error('Database error creating booking:', dbError);
+          throw dbError;
+        }
       }
       
-      // Store the booking ID in the global var to prevent duplicates
-      global[processKey] = booking.booking_id;
-      
-      // Return a simplified response with just what's needed
-      return res.json({ 
-        booking_id: booking.booking_id 
-      });
+      // Return the booking ID for the frontend
+      return res.json({ booking_id: booking.booking_id });
     } catch (stripeError) {
-      delete global[processKey];
       console.error('Stripe session error:', stripeError);
       throw new Error(`Failed to process Stripe session: ${stripeError.message}`);
     }
@@ -355,7 +344,7 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
   try {
     const bookingId = parseInt(req.params.id);
     if (isNaN(bookingId)) {
-      return res.status(400).json({ error: 'Invalid booking ID' });
+      return res.status(400).json({ error: 'Valid booking ID is required' });
     }
     
     // Get user ID from authenticated user
@@ -372,44 +361,38 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    // Find the booking first to check permissions
-    const existingBooking = await prisma.bookings.findUnique({
-      where: { booking_id: bookingId },
-      include: { camping_spot: true }
-    });
-    
-    if (!existingBooking) {
-      return res.status(404).json({ error: 'Booking not found' });
-    }
-    
-    // Verify that this user is the owner of the booking
-    if (existingBooking.user_id !== userRecord.user_id) {
-      return res.status(403).json({ error: 'Not authorized to cancel this booking' });
-    }
-    
-    // Check if the booking is already cancelled
-    if (existingBooking.status_id === 3) {
-      return res.status(400).json({ error: 'Booking is already cancelled' });
-    }
-    
-    // Check if the booking is within the cancellation window (48 hours)
-    const startDate = new Date(existingBooking.start_date);
-    const now = new Date();
-    const hoursDiff = (startDate - now) / (1000 * 60 * 60);
-    
-    if (hoursDiff <= 48) {
-      return res.status(400).json({ 
-        error: 'Cancellation not allowed within 48 hours of check-in' 
-      });
-    }
-    
+    // Start a transaction
     const result = await prisma.$transaction(async (tx) => {
-      // Update booking status to cancelled
-      const booking = await tx.bookings.update({
+      // Get booking with camping spot owner info
+      const booking = await tx.bookings.findUnique({
+        where: { booking_id: bookingId },
+        include: {
+          camping_spot: {
+            select: {
+              owner_id: true
+            }
+          },
+          transaction: true
+        }
+      });
+      
+      if (!booking) {
+        throw new Error('Booking not found');
+      }
+      
+      // Security check: Users can only cancel their own bookings or bookings for spots they own
+      const isOwner = booking.camping_spot.owner_id === userRecord.user_id;
+      const isBooker = booking.user_id === userRecord.user_id;
+      
+      if (!isBooker && !isOwner) {
+        throw new Error('Access denied: You do not have permission to cancel this booking');
+      }
+      
+      // Update booking status to CANCELLED (3)
+      const updatedBooking = await tx.bookings.update({
         where: { booking_id: bookingId },
         data: { status_id: 3 }, // CANCELLED
         include: {
-          transaction: true,
           status_booking_transaction: true,
           camping_spot: {
             include: {
@@ -433,7 +416,7 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
         });
       }
       
-      return booking;
+      return updatedBooking;
     });
     
     console.log(`Booking ${bookingId} cancelled successfully`);

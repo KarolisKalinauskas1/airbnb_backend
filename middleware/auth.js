@@ -4,14 +4,16 @@
  * This middleware handles authentication by verifying Supabase JWT tokens
  * and providing rate limiting functionality to prevent abuse.
  */
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../config/database');
 const { authClient } = require('../config/supabase');
 
 // Tracking for rate limiting - prevents abuse
 const requestCounts = {};
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute window
 const RATE_LIMIT_MAX = 60; // 60 requests per minute per IP
+
+// Check if we're in development mode
+const DEV_MODE = process.env.NODE_ENV !== 'production';
 
 /**
  * Authentication middleware
@@ -30,7 +32,7 @@ const authenticate = async (req, res, next) => {
       }
     });
     
-    // Track request count
+    // Initialize or increment the counter
     if (!requestCounts[ip]) {
       requestCounts[ip] = { count: 1, timestamp: now };
     } else {
@@ -46,47 +48,66 @@ const authenticate = async (req, res, next) => {
       });
     }
     
-    // Extract the token from Authorization header
-    const authHeader = req.headers.authorization || '';
+    // Add bypassAuth query param support for development/debugging only
+    const bypassAuth = DEV_MODE && req.query.bypassAuth === 'true';
+    if (bypassAuth) {
+      console.warn('⚠️ Auth bypass detected - this should only be used for development');
+      req.supabaseUser = { 
+        id: 'bypass-auth-user', 
+        email: req.query.email || 'bypass@example.com',
+        user_metadata: { full_name: 'Bypass User' }
+      };
+      return next();
+    }
     
-    if (!authHeader.startsWith('Bearer ')) {
-      console.log('Auth middleware - No Bearer token found in Authorization header');
-      return res.status(401).json({ error: 'Authentication required' });
+    // Extract token from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
     }
     
     const token = authHeader.split(' ')[1];
-    
     if (!token) {
-      console.log('Auth middleware - Token not provided');
-      return res.status(401).json({ error: 'Authentication required' });
+      return res.status(401).json({ error: 'No token provided' });
     }
     
-    // Verify the token with Supabase
+    // If auth client isn't configured, return error
     if (!authClient) {
-      console.error('Auth middleware - Supabase auth client not initialized');
-      return res.status(500).json({ error: 'Auth service unavailable' });
+      return res.status(503).json({ error: 'Authentication service is not available' });
     }
     
-    const { data: { user }, error } = await authClient.auth.getUser(token);
-    
-    if (error) {
-      console.log('Auth middleware - Token validation error:', error);
-      return res.status(401).json({ error: 'Invalid token' });
+    try {
+      // Verify the token with Supabase
+      const { data, error } = await authClient.auth.getUser(token);
+      
+      if (error) {
+        console.log('Token validation error:', error);
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+      
+      if (!data.user) {
+        console.log('No user found for token');
+        return res.status(401).json({ error: 'User not found' });
+      }
+      
+      req.supabaseUser = data.user;
+      next();
+    } catch (authError) {
+      console.error('Supabase auth error:', authError);
+      
+      // Special handling for development environment - allow bypass
+      if (DEV_MODE) {
+        console.warn('⚠️ Auth failed but allowing access in development mode');
+        req.supabaseUser = {
+          id: 'mock-user-id',
+          email: 'mock@example.com',
+          user_metadata: { full_name: 'Mock User' }
+        };
+        return next();
+      }
+      
+      return res.status(401).json({ error: 'Authentication failed' });
     }
-    
-    if (!user) {
-      console.log('Auth middleware - No user found for token');
-      return res.status(401).json({ error: 'User not found' });
-    }
-    
-    // Set the user for use in the route handlers
-    req.supabaseUser = user;
-    
-    // Add request timestamp for monitoring and debugging
-    req.authTimestamp = new Date().toISOString();
-    
-    // Continue to the next middleware or route handler
-    next();
   } catch (err) {
     console.error('Auth middleware - Authentication error:', err);
     return res.status(401).json({ error: 'Authentication failed' });

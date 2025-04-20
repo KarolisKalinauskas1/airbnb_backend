@@ -1,13 +1,13 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const { prisma } = require('../config/database');
+const { authClient, isConfigured } = require('../config/supabase');
 
-// Import proper Supabase client for authentication
-const { authClient } = require('../config/supabase');
-
-// Add request tracking for rate limiting
+// Tracking for rate limiting - prevents abuse
 const requestCounts = {};
-const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute window
 const RATE_LIMIT_MAX = 60; // 60 requests per minute per IP
+
+// Check if we're in development mode
+const DEV_MODE = process.env.NODE_ENV !== 'production';
 
 /**
  * Authentication middleware
@@ -19,37 +19,47 @@ const authenticate = async (req, res, next) => {
     const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
     const now = Date.now();
     
-    // Clean up expired entries to prevent memory leaks
+    // Clean up expired entries
     Object.keys(requestCounts).forEach(key => {
       if (now - requestCounts[key].timestamp > RATE_LIMIT_WINDOW) {
         delete requestCounts[key];
       }
     });
     
-    // Initialize or increment the counter
+    // Initialize or increment counter
     if (!requestCounts[ip]) {
       requestCounts[ip] = { count: 1, timestamp: now };
     } else {
       requestCounts[ip].count++;
     }
     
-    // Check if rate limit is exceeded
+    // Check rate limit
     if (requestCounts[ip].count > RATE_LIMIT_MAX) {
-      console.log(`Rate limit exceeded for IP ${ip}`);
       return res.status(429).json({ 
         error: 'Too many requests, please try again later',
         retryAfter: Math.ceil((requestCounts[ip].timestamp + RATE_LIMIT_WINDOW - now) / 1000)
       });
     }
     
-    // Extract and validate token
-    const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-      console.log('No token provided');
-      return res.status(401).json({ error: 'Missing token' });
+    // Extract token from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
     }
-
+    
+    const token = authHeader.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+    
+    // Check if auth client is configured
+    if (!isConfigured) {
+      return res.status(503).json({ 
+        error: 'Authentication service not available',
+        details: 'Supabase authentication is not properly configured'
+      });
+    }
+    
     // Verify the token with Supabase
     const { data: { user }, error } = await authClient.auth.getUser(token);
     
@@ -59,18 +69,16 @@ const authenticate = async (req, res, next) => {
     }
     
     if (!user) {
-      console.log('No user found for token');
       return res.status(401).json({ error: 'User not found' });
     }
     
-    // Set the user for use in the route handlers
+    // Attach user to request
     req.supabaseUser = user;
-    req.authTimestamp = new Date().toISOString(); // Add a timestamp for monitoring
     next();
   } catch (err) {
-    console.error('Authentication error:', err);
+    console.error('Auth middleware error:', err);
     return res.status(401).json({ error: 'Authentication failed' });
   }
 };
 
-module.exports = { authenticate, prisma };
+module.exports = { authenticate };

@@ -3,17 +3,25 @@
  * Prevents HTML responses for API requests and adds helpful debug info
  */
 function apiResponseHandler(req, res, next) {
-  // Check if this is an API request
-  const isApiRequest = req.path.startsWith('/api/') ||
-                       (req.headers.accept && req.headers.accept.includes('application/json'));
+  // Check if this is an API request based on path or Accept header
+  const isApiRequest = 
+    req.path.startsWith('/api/') || 
+    req.path.startsWith('/camping-spots') || 
+    req.path.startsWith('/users') || 
+    req.path.startsWith('/dashboard') || 
+    req.path.startsWith('/bookings') ||
+    req.path.startsWith('/health') ||
+    (req.headers.accept && 
+      (req.headers.accept.includes('application/json') && 
+       !req.headers.accept.includes('text/html')));
   
   if (isApiRequest) {
-    // Override res.send to prevent HTML responses for API requests
+    // Set content type header for API requests ahead of time
+    res.type('application/json');
+    
+    // Override res.send to prevent HTML responses
     const originalSend = res.send;
     res.send = function(body) {
-      // Always set content type header for API requests
-      res.setHeader('Content-Type', 'application/json');
-      
       // If we're about to send HTML but this is an API request
       if (typeof body === 'string' && body.trim().startsWith('<!DOCTYPE html>')) {
         console.warn(`Prevented HTML response for API request: ${req.path}`);

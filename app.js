@@ -8,13 +8,15 @@ const { debug, errorWithContext } = require('./utils/logger');
 
 // Import middleware
 const spaHandler = require('./middleware/spa-handler');
+const dbConnectionCheck = require('./middleware/db-connection-check');
 const { enforceJsonForApi } = require('./middlewares/content-type');
 const apiResponseHandler = require('./middleware/api-response-handler');
-const apiCircuitBreaker = require('./middleware/apiCircuitBreaker'); // Add this line
-const contentTypeMiddleware = require('./middleware/contentTypeMiddleware');
+const apiCircuitBreaker = require('./middleware/apiCircuitBreaker');
+const contentTypeMiddleware = require('./middleware/content-type-middleware');
 const contentNegotiation = require('./middleware/content-negotiation');
 const corsHandler = require('./middleware/cors-handler');
 const corsPreflightHandler = require('./middleware/cors-preflight-handler');
+const defaultParamsMiddleware = require('./middleware/default-params');
 
 // Import routes
 const indexRouter = require('./routes/index');
@@ -22,87 +24,73 @@ const campersRouter = require('./routes/campers');
 const userRouter = require('./routes/users');
 const dashboardRouter = require('./routes/dashboard');
 const bookingsRouter = require('./routes/bookings');
-const diagnosticsRouter = require('./routes/diagnostics');
+const authRouter = require('./routes/auth');
+const webhooksRouter = require('./routes/webhooks');
 const healthRouter = require('./routes/health');
+const diagnosticsRouter = require('./routes/diagnostics');
 
 const app = express();
 
-// Setup view engine (needed for error pages)
+// view engine setup
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'jade');
 
-// Handle preflight requests before the CORS middleware
+// Apply CORS middleware first
+app.use(corsHandler);
 app.use(corsPreflightHandler);
 
-// Apply CORS middleware first
-app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'], // Frontend URLs
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With', 'Origin']
-}));
-
-// Apply additional CORS headers for all responses
-app.use(corsHandler);
-
-// Apply content negotiation middleware early to ensure proper content types
-app.use(contentNegotiation);
-
-// Add logging middleware
+// Basic middleware
 app.use(logger('dev'));
-
-// Special handling for Stripe webhook route - must be before general JSON parser
-app.use('/api/bookings/webhook', (req, res, next) => {
-  if (req.originalUrl === '/api/bookings/webhook' && req.method === 'POST') {
-    // Let the webhook middleware handle this
-    next();
-  } else {
-    express.json()(req, res, next);
-  }
-});
-
-// Apply default middleware for other routes
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Add middleware for content negotiation - add this before routes
-app.use(enforceJsonForApi);
+// Apply default parameters to specific routes
+app.use(defaultParamsMiddleware);
 
-// Apply API response middleware before routes
-app.use(apiResponseHandler);
-
-// Apply API circuit breaker for all API routes
-app.use('/api', apiCircuitBreaker);
-
-// Apply content type middleware to all routes
+// Add our improved content negotiation middleware
 app.use(contentTypeMiddleware);
 
-// Apply rate limiters
-const rateLimiter = require('./middleware/rateLimiter');
-app.use('/api/', rateLimiter);
+// Content negotiation to ensure proper responses
+app.use(contentNegotiation);
+app.use(enforceJsonForApi);
+app.use(apiResponseHandler);
 
-// Set up routes with proper error handling
-app.use('/', indexRouter);
+// Rate limiting for API endpoints
+app.use('/api', apiCircuitBreaker);
 
-// API routes - keep these routes BEFORE the SPA handler
-app.use('/api/camping-spots', campersRouter);
-app.use('/api/users', userRouter);
-app.use('/api/dashboard', dashboardRouter);
-app.use('/api/bookings', bookingsRouter);
-app.use('/api/diagnostics', diagnosticsRouter);
+// Health check doesn't need DB check - always accessible
+app.use('/health', healthRouter);
 app.use('/api/health', healthRouter);
 
-// Non-API routes that should still return JSON based on Accept header
-app.use('/camping-spots', campersRouter);
-app.use('/users', userRouter);
-app.use('/dashboard', dashboardRouter);
-app.use('/bookings', bookingsRouter);
-app.use('/diagnostics', diagnosticsRouter);
+// Apply database connection check for API routes
+app.use('/api', dbConnectionCheck);
 
-// Specifically handle dashboard routes to avoid redirect issues
-app.get('/dashboard', function(req, res) {
+// Routes
+app.use('/', indexRouter);
+app.use('/camping-spots', campersRouter);
+app.use('/api/camping-spots', campersRouter);
+app.use('/users', userRouter);
+app.use('/api/users', userRouter);
+app.use('/dashboard', dashboardRouter);
+app.use('/api/dashboard', dashboardRouter);
+app.use('/bookings', bookingsRouter);
+app.use('/api/bookings', bookingsRouter);
+app.use('/api/auth', authRouter);
+app.use('/auth', authRouter);
+app.use('/api/webhooks', webhooksRouter);
+app.use('/api/diagnostics', diagnosticsRouter);
+
+// Serve static files - must be after API routes but before SPA handling
+app.use(express.static(path.join(__dirname, 'public')));
+
+// SPA routes - anything not matched above will go to the SPA
+app.get('/camping-spot/*', function(req, res) {
+  // Frontend routes should serve the index.html
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/account/*', function(req, res) {
   // Frontend routes should serve the index.html
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

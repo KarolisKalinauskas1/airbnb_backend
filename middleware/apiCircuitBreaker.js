@@ -5,12 +5,17 @@
 
 const clientTracker = new Map();
 
-// Configuration
-const MAX_REQUESTS_PER_MINUTE = 60;
+// Configuration - increased to be more forgiving
+const MAX_REQUESTS_PER_MINUTE = 300; // Increased from 60 to 300
 const BREAKER_RESET_TIME_MS = 60000; // 1 minute
-const BANNED_RESET_TIME_MS = 300000; // 5 minutes
+const BANNED_RESET_TIME_MS = 120000; // Reduced from 300000 to 120000 (2 minutes instead of 5)
 
 function apiCircuitBreaker(req, res, next) {
+  // Skip circuit breaker for health checks
+  if (req.path.includes('/health')) {
+    return next();
+  }
+  
   const clientIP = req.ip || req.headers['x-forwarded-for'] || 'unknown';
   const now = Date.now();
   

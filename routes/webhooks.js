@@ -86,6 +86,24 @@ async function handleCheckoutSessionCompleted(session) {
     return;
   }
 
+  // Get the actual camping spot price to ensure we use the correct amount
+  const campingSpot = await prisma.camping_spot.findUnique({
+    where: { camping_spot_id: parseInt(camper_id) }
+  });
+  
+  if (!campingSpot) {
+    console.error(`Camping spot not found: ${camper_id}`);
+    return;
+  }
+  
+  // Calculate nights
+  const start = new Date(start_date);
+  const end = new Date(end_date);
+  const nightCount = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+  
+  // Calculate correct base price
+  const actualBasePrice = campingSpot.price_per_night * nightCount;
+
   // Create the booking record
   const booking = await prisma.bookings.create({
     data: {
@@ -94,7 +112,7 @@ async function handleCheckoutSessionCompleted(session) {
       start_date: new Date(start_date),
       end_date: new Date(end_date),
       number_of_guests: parseInt(number_of_guests),
-      cost: parseFloat(cost),
+      cost: actualBasePrice, // Use the calculated price from the actual spot price
       created_at: new Date(),
       status_id: 2 // CONFIRMED
     }
@@ -103,7 +121,7 @@ async function handleCheckoutSessionCompleted(session) {
   // Create a transaction record for the payment
   await prisma.transaction.create({
     data: {
-      amount: parseFloat(total),
+      amount: parseFloat(session.amount_total / 100), // Convert from cents
       status_id: 2, // CONFIRMED
       booking_id: booking.booking_id
     }
