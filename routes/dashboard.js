@@ -2,235 +2,515 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const dashboardRateLimiter = require('../middleware/dashboardRateLimiter');
-const { debug, errorWithContext } = require('../utils/logger');
+const { authenticate } = require('../middlewares/auth');
 
-// Robust server-side caching
+// Cache settings
 const dashboardCache = new Map();
-const CACHE_DURATION_MS = 60000; // 1 minute cache for normal requests
-const FORCE_REFRESH_CACHE_DURATION_MS = 10000; // 10 second cache for forced refreshes
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-// Apply dashboard-specific rate limiter instead of the global one
-router.use(dashboardRateLimiter);
+/**
+ * Helper to log errors with context
+ */
+function errorWithContext(component, error, context = {}) {
+  console.error(`[${component}] Error:`, error.message);
+  if (Object.keys(context).length) {
+    console.error('Context:', context);
+  }
+}
 
-// Health endpoint for checking dashboard service
-router.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+/**
+ * Check if user is allowed to access owner dashboard
+ */
+async function ownerAccessCheck(req, res) {
+  if (!req.user) {
+    return { allowed: false, reason: 'Authentication required' };
+  }
+  
+  console.log('User data from token:', req.user);
+  
+  // More comprehensive owner check that handles all possible values
+  const isOwner = req.user.isowner === 1 || 
+                  req.user.isowner === '1' || 
+                  req.user.isowner === true ||
+                  req.user.isowner === 'true' ||
+                  req.user.isowner === 'yes' ||
+                  req.user.isowner === 'YES' ||
+                  Number(req.user.isowner) === 1;
+  
+  // Log the actual value to help with debugging
+  console.log(`isowner value (${typeof req.user.isowner}):`, req.user.isowner);
+  console.log('Owner check result:', isOwner);
+  
+  if (!isOwner) {
+    return { allowed: false, reason: 'Only owner accounts can view analytics' };
+  }
+  
+  return { allowed: true, userId: req.user.user_id };
+}
 
-// Root endpoint to avoid 404 errors
-router.get('/', (req, res) => {
-  // Simply redirect to analytics endpoint
-  res.redirect('/api/dashboard/analytics');
-});
-
-router.get('/analytics', async (req, res) => {
+/**
+ * Get dashboard analytics data
+ */
+router.get('/analytics', authenticate, async (req, res) => {
   try {
-    // Generate a cache key based on user ID if available
-    const userId = req.user?.id || 'guest';
-    const isForceRefresh = req.query.refresh === 'true';
-    const cacheKey = `analytics_${userId}`;
-    const now = Date.now();
+    console.log('Dashboard analytics access attempt by user:', req.user?.user_id);
     
-    // Use different cache durations based on refresh type
-    const cacheDuration = isForceRefresh 
-      ? FORCE_REFRESH_CACHE_DURATION_MS 
-      : CACHE_DURATION_MS;
-    
-    // Check if we have a valid cached response
-    if (!isForceRefresh && dashboardCache.has(cacheKey)) {
-      const cachedData = dashboardCache.get(cacheKey);
-      if (now - cachedData.timestamp < cacheDuration) {
-        debug('Dashboard', 'Serving cached dashboard data');
-        return res.json(cachedData.data);
-      }
+    // Check owner access
+    const access = await ownerAccessCheck(req, res);
+    if (!access.allowed) {
+      console.log('Access denied:', access.reason);
+      return res.status(403).json({ error: access.reason });
     }
     
-    const today = new Date();
-    const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-    const firstDayLastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-
-    const [bookingStats, spotStats, recentBookings] = await Promise.all([
-      // Booking and revenue statistics
-      prisma.$queryRaw`
-        WITH booking_metrics AS (
-          SELECT 
-            -- Only count confirmed(2) and completed(4) bookings as "real" bookings
-            COUNT(*) FILTER (WHERE status_id IN (2, 4)) as total_bookings,
-            
-            -- Include all valid revenue (including cancelled)
-            SUM(cost) FILTER (WHERE status_id NOT IN (5)) as total_revenue,
-            
-            -- Monthly bookings only includes confirmed and completed
-            COUNT(*) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 4)) as monthly_bookings,
-            
-            -- Monthly revenue includes cancelled
-            SUM(cost) FILTER (WHERE created_at >= ${firstDayOfMonth} AND status_id IN (2, 3, 4)) as monthly_revenue,
-            
-            -- Last month bookings only includes confirmed and completed
-            COUNT(*) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} 
-                            AND status_id IN (2, 4)) as last_month_bookings,
-            
-            -- Last month revenue includes cancelled
-            SUM(cost) FILTER (WHERE created_at >= ${firstDayLastMonth} AND created_at < ${firstDayOfMonth} 
-                              AND status_id IN (2, 3, 4)) as last_month_revenue,
-            
-            -- Average revenue per booking (excludes unavailable)
-            AVG(cost) FILTER (WHERE status_id NOT IN (5)) as average_revenue,
-            
-            -- Average duration - only for real bookings (confirmed/completed)
-            AVG(EXTRACT(DAY FROM (end_date::timestamp - start_date::timestamp)))
-              FILTER (WHERE status_id IN (2, 4)) as average_duration,
-            
-            -- Track cancelled revenue separately
-            SUM(cost) FILTER (WHERE status_id = 3) as cancelled_revenue
-          FROM bookings
-        )
-        SELECT 
-          *,
-          CASE 
-            WHEN last_month_revenue = 0 OR last_month_revenue IS NULL THEN 0
-            ELSE ROUND(((monthly_revenue - last_month_revenue) / last_month_revenue * 100))
-          END as revenue_growth,
-          CASE
-            WHEN last_month_bookings = 0 OR last_month_bookings IS NULL THEN 0
-            ELSE ROUND(((monthly_bookings - last_month_bookings) / last_month_bookings * 100))
-          END as bookings_growth
-        FROM booking_metrics
-      `,
-
-      // Spot performance and popularity - get all relevant bookings
-      prisma.camping_spot.findMany({
-        select: {
-          camping_spot_id: true,
-          title: true,
+    const userId = access.userId;
+    console.log('Fetching analytics for userId:', userId);
+    
+    // Check cache
+    const now = Date.now();
+    const cacheKey = `dashboard-${userId}`;
+    const cachedData = dashboardCache.get(cacheKey);
+    
+    if (cachedData && (now - cachedData.timestamp < CACHE_TTL) && !req.query.refresh) {
+      console.log('Using cached dashboard data');
+      return res.json(cachedData.data);
+    }
+    
+    try {
+      // Get all camping spots for this owner
+      console.log('Fetching camping spots for owner:', userId);
+      const spotStats = await prisma.camping_spot.findMany({
+        where: {
+          owner_id: userId
+        },
+        include: {
           bookings: {
-            where: {
-              status_id: { in: [2, 3, 4, 5] } // Include all: confirmed, cancelled, completed, unavailable
-            },
-            select: {
-              cost: true,
-              start_date: true,
-              end_date: true,
-              status_id: true
+            include: {
+              status_booking_transaction: true
             }
           }
         }
-      }),
+      });
+      console.log(`Found ${spotStats.length} spots for owner`);
+      
+      // Get booking statistics safely with error handling
+      console.log('Fetching booking statistics...');
+      let bookingStats = [{ 
+        total_bookings: 0, 
+        total_revenue: 0, 
+        monthly_bookings: 0,
+        monthly_revenue: 0,
+        average_duration: 0,
+        bookings_growth: 0,
+        revenue_growth: 0,
+        cancelled_revenue: 0
+      }];
+      let recentBookings = [];
+      
+      try {
+        [bookingStats, recentBookings] = await Promise.all([
+          prisma.$queryRaw`
+            SELECT 
+              COUNT(*) as total_bookings,
+              COALESCE(SUM(b.cost), 0) as total_revenue,
+              COUNT(CASE WHEN b.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) as monthly_bookings,
+              COALESCE(SUM(CASE WHEN b.created_at >= NOW() - INTERVAL '30 days' THEN b.cost ELSE 0 END), 0) as monthly_revenue,
+              COALESCE(AVG(EXTRACT(DAY FROM (b.end_date - b.start_date))), 0) as average_duration,
+              COALESCE(
+                (COUNT(CASE WHEN b.created_at >= NOW() - INTERVAL '30 days' THEN 1 END) - 
+                 COUNT(CASE WHEN b.created_at >= NOW() - INTERVAL '60 days' 
+                       AND b.created_at < NOW() - INTERVAL '30 days' THEN 1 END)) / 
+                NULLIF(COUNT(CASE WHEN b.created_at >= NOW() - INTERVAL '60 days' 
+                      AND b.created_at < NOW() - INTERVAL '30 days' THEN 1 END), 0) * 100, 
+                0
+              ) as bookings_growth,
+              COALESCE(
+                (SUM(CASE WHEN b.created_at >= NOW() - INTERVAL '30 days' THEN b.cost ELSE 0 END) - 
+                 SUM(CASE WHEN b.created_at >= NOW() - INTERVAL '60 days' 
+                       AND b.created_at < NOW() - INTERVAL '30 days' THEN b.cost ELSE 0 END)) / 
+                NULLIF(SUM(CASE WHEN b.created_at >= NOW() - INTERVAL '60 days' 
+                      AND b.created_at < NOW() - INTERVAL '30 days' THEN b.cost ELSE 0 END), 0) * 100,
+                0
+              ) as revenue_growth,
+              COALESCE(SUM(CASE WHEN b.status_id = 3 THEN b.cost ELSE 0 END), 0) as cancelled_revenue
+            FROM bookings b
+            JOIN camping_spot cs ON b.camper_id = cs.camping_spot_id
+            WHERE cs.owner_id = ${userId}
+          `,
+          prisma.bookings.findMany({
+            take: 10,
+            orderBy: { created_at: 'desc' },
+            select: {
+              booking_id: true,
+              start_date: true,
+              end_date: true,
+              cost: true,
+              status_id: true,
+              camping_spot: {
+                select: { title: true }
+              },
+              users: {
+                select: { full_name: true }
+              },
+              status_booking_transaction: {
+                select: { status: true }
+              }
+            },
+            where: {
+              camping_spot: {
+                owner_id: userId
+              },
+              status_id: { not: 5 } // Exclude unavailable bookings
+            }
+          })
+        ]);
+        console.log('Booking statistics fetched successfully');
+      } catch (statsError) {
+        console.error('Error fetching booking statistics:', statsError);
+        // Continue with empty stats
+      }
 
-      // Recent bookings
-      prisma.bookings.findMany({
-        where: {
-          status_id: { not: 5 } // Exclude unavailable bookings
+      console.log('Processing spot statistics...');
+      // Process spot statistics
+      const spotPerformance = spotStats.map(spot => {
+        try {
+          // Revenue includes all bookings except unavailable (status 5)
+          const validBookings = spot.bookings ? spot.bookings.filter(b => b && b.status_id !== 5) : [];
+          const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost || 0), 0);
+          
+          // For occupancy calculation
+          const occupiedBookings = spot.bookings ? spot.bookings.filter(b => b && [2, 4, 5].includes(b.status_id)) : [];
+          const totalDays = occupiedBookings.reduce((sum, b) => {
+            try {
+              const start = new Date(b.start_date);
+              const end = new Date(b.end_date);
+              if (end > start) {
+                return sum + Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+              }
+              return sum;
+            } catch (dateError) {
+              console.error('Error calculating booking days:', dateError);
+              return sum;
+            }
+          }, 0);
+          
+          // Calculate 30-day occupancy rate (days booked / 30 days * 100%)
+          const occupancyRate = Math.min(Math.round(totalDays / 30 * 100), 100);
+          
+          // Active bookings are confirmed(2) and completed(4), excluding cancelled(3) and unavailable(5) bookings
+          const activeBookings = spot.bookings ? spot.bookings.filter(b => b && [2, 4].includes(b.status_id)) : [];
+          
+          return {
+            id: spot.camping_spot_id,
+            name: spot.title,
+            bookings: activeBookings.length,
+            revenue: Number(totalRevenue),
+            occupancyRate: occupancyRate,
+            performance: Number(totalRevenue) * activeBookings.length / 100, // Simple performance metric
+            status: spot.status || 'active'
+          };
+        } catch (spotError) {
+          console.error('Error processing spot:', spotError, spot);
+          return {
+            id: spot.camping_spot_id || 'unknown',
+            name: spot.title || 'Unknown',
+            bookings: 0,
+            revenue: 0,
+            occupancyRate: 0,
+            performance: 0,
+            status: 'error'
+          };
+        }
+      });
+      
+      console.log('Calculating average occupancy rate...');
+      // Calculate average occupancy rate
+      const averageOccupancyRate = spotPerformance.length > 0
+        ? Math.round(spotPerformance.reduce((sum, spot) => sum + spot.occupancyRate, 0) / spotPerformance.length)
+        : 0;
+      
+      console.log('Preparing response data...');
+      // Prepare response data - ensure all fields have fallback values
+      const responseData = {
+        revenue: {
+          total: Number(bookingStats[0]?.total_revenue || 0),
+          monthly: Number(bookingStats[0]?.monthly_revenue || 0),
+          projected: Number((bookingStats[0]?.monthly_revenue || 0) * 1.1),
+          growth: Number(bookingStats[0]?.revenue_growth || 0),
+          cancelled: Number(bookingStats[0]?.cancelled_revenue || 0)
         },
-        take: 10,
-        orderBy: { created_at: 'desc' },
-        select: {
-          booking_id: true,
-          start_date: true,
-          end_date: true,
-          cost: true,
-          status_id: true,
-          camping_spot: {
-            select: { title: true }
-          },
-          users: {
-            select: { full_name: true }
-          },
-          status_booking_transaction: {
-            select: { status: true }
+        bookings: {
+          total: Number(bookingStats[0]?.total_bookings || 0),
+          monthly: Number(bookingStats[0]?.monthly_bookings || 0),
+          averageDuration: Number(bookingStats[0]?.average_duration || 0),
+          occupancyRate: averageOccupancyRate,
+          growth: Number(bookingStats[0]?.bookings_growth || 0),
+          active: spotPerformance.reduce((sum, spot) => sum + spot.bookings, 0)
+        },
+        popularSpots: spotPerformance.sort((a, b) => b.bookings - a.bookings).slice(0, 5),
+        spotPerformance: spotPerformance.sort((a, b) => b.performance - a.performance),
+        totalSpots: spotPerformance.length,
+        recentBookings: recentBookings.map(b => {
+          try {
+            return {
+              id: b.booking_id,
+              spotName: b.camping_spot?.title || 'Unknown',
+              guestName: b.users?.full_name || 'Unknown',
+              startDate: b.start_date ? b.start_date.toISOString() : null,
+              endDate: b.end_date ? b.end_date.toISOString() : null,
+              revenue: Number(b.cost || 0),
+              status: b.status_booking_transaction?.status?.toLowerCase() || 'unknown',
+              cancelled: b.status_id === 3
+            };
+          } catch (bookingError) {
+            console.error('Error processing booking:', bookingError);
+            return {
+              id: b.booking_id || 'unknown',
+              spotName: 'Error',
+              guestName: 'Error',
+              startDate: null,
+              endDate: null,
+              revenue: 0,
+              status: 'error',
+              cancelled: false
+            };
           }
-        }
-      })
-    ]);
+        })
+      };
+      
+      console.log('Caching response data...');
+      // Cache the response
+      dashboardCache.set(cacheKey, {
+        timestamp: now,
+        data: responseData
+      });
+      
+      console.log('Sending response...');
+      return res.json(responseData);
+    } catch (innerError) {
+      console.error('Inner error in dashboard analytics:', innerError);
+      throw innerError; // Re-throw to be caught by the outer catch block
+    }
+  } catch (error) {
+    console.error('Dashboard Analytics Error:', error.message);
+    console.error('Error Stack:', error.stack);
+    return res.status(500).json({ 
+      error: 'Failed to fetch dashboard data', 
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
 
-    // Process spot statistics - handle different booking statuses properly
-    const spotPerformance = spotStats.map(spot => {
-      // Revenue includes all bookings except unavailable (status 5)
-      const validBookings = spot.bookings.filter(b => b.status_id !== 5);
-      const totalRevenue = validBookings.reduce((sum, b) => sum + Number(b.cost), 0);
-      
-      // For occupancy calculation, include confirmed(2), completed(4), and unavailable(5) bookings
-      // This correctly accounts for all time periods where the spot cannot be booked
-      const occupiedBookings = spot.bookings.filter(b => [2, 4, 5].includes(b.status_id));
-      const totalDays = occupiedBookings.reduce((sum, b) => {
-        const start = new Date(b.start_date);
-        const end = new Date(b.end_date);
-        // Ensure valid date range calculation
-        if (end > start) {
-          return sum + Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+/**
+ * Get owner spots for management (forwarding to campers route)
+ */
+router.get('/spots', authenticate, async (req, res) => {
+  try {
+    console.log('[dashboard.js] Processing /spots route, forwarding to /camping-spots/owner');
+    
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    // Check if the user is an owner
+    const isOwner = req.user.isowner === 1 || 
+                    req.user.isowner === '1' || 
+                    req.user.isowner === true ||
+                    req.user.isowner === 'true' ||
+                    req.user.isowner === 'yes' ||
+                    req.user.isowner === 'YES' ||
+                    Number(req.user.isowner) === 1;
+    
+    if (!isOwner) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        message: 'Only owners can access their spots'
+      });
+    }
+    
+    // Instead of redirecting (which can cause issues with headers), 
+    // we'll directly use the spots route logic
+    const userId = req.user.user_id;
+    
+    const spots = await prisma.camping_spot.findMany({
+      where: {
+        owner_id: userId
+      },
+      include: {
+        images: true,
+        location: {
+          include: { country: true }
+        },
+        camping_spot_amenities: {
+          include: { amenity: true }
+        },
+        bookings: true
+      }
+    });
+    
+    res.json(spots);
+  } catch (error) {
+    console.error('Error fetching owner camping spots from dashboard:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch camping spots', 
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Get owner bookings
+ */
+router.get('/bookings', authenticate, async (req, res) => {
+  try {
+    console.log('[dashboard.js] Processing /bookings route');
+    
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    // Check if the user is an owner
+    const isOwner = req.user.isowner === 1 || 
+                    req.user.isowner === '1' || 
+                    req.user.isowner === true ||
+                    req.user.isowner === 'true' ||
+                    req.user.isowner === 'yes' ||
+                    req.user.isowner === 'YES' ||
+                    Number(req.user.isowner) === 1;
+    
+    if (!isOwner) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        message: 'Only owners can access their bookings'
+      });
+    }
+    
+    // Get user ID
+    const userId = req.user.user_id;
+    console.log(`Fetching bookings for owner ID: ${userId}`);
+    
+    // First, get all camping spots owned by this user
+    const ownerCampingSpots = await prisma.camping_spot.findMany({
+      where: {
+        owner_id: userId
+      },
+      select: {
+        camping_spot_id: true,
+        title: true
+      }
+    });
+    
+    if (ownerCampingSpots.length === 0) {
+      console.log('No camping spots found for owner');
+      return res.json([]);
+    }
+    
+    const campingSpotIds = ownerCampingSpots.map(spot => spot.camping_spot_id);
+    console.log(`Found ${campingSpotIds.length} camping spots for owner`);
+    
+    // Now get all bookings for these camping spots
+    const bookings = await prisma.bookings.findMany({
+      where: {
+        camper_id: {
+          in: campingSpotIds
         }
-        return sum;
-      }, 0);
-      
-      // Calculate occupancy rate (days booked or unavailable / days in year)
-      const daysInYear = 365;
-      const occupancyRate = Math.min(100, Math.round((totalDays / daysInYear) * 100));
-      
-      // For booking count, exclude cancelled(3) and unavailable(5) bookings
-      const activeBookings = spot.bookings.filter(b => [2, 4].includes(b.status_id));
+      },
+      include: {
+        camping_spot: {
+          select: {
+            title: true,
+            price_per_night: true,
+            camping_spot_id: true,
+            images: {
+              select: {
+                image_url: true
+              },
+              take: 1
+            },
+            location: {
+              select: {
+                city: true,
+                country: {
+                  select: { name: true }
+                }
+              }
+            }
+          }
+        },
+        users: {
+          select: {
+            full_name: true,
+            email: true,
+            user_id: true
+          }
+        },
+        status_booking_transaction: {
+          select: { status: true }
+        }
+      },
+      orderBy: {
+        created_at: 'desc'
+      }
+    });
+    
+    console.log(`Found ${bookings.length} bookings for owner's camping spots`);
+    
+    // Calculate total price for each booking
+    const enhancedBookings = bookings.map(booking => {
+      // Calculate number of nights
+      const startDate = new Date(booking.start_date);
+      const endDate = new Date(booking.end_date);
+      const nights = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
       
       return {
-        id: spot.camping_spot_id,
-        name: spot.title,
-        bookings: activeBookings.length,
-        occupancyRate: occupancyRate,
-        revenue: totalRevenue,
-        trend: activeBookings.length > 0 ? 1 : -1,
-        performance: activeBookings.length > 0 ? totalRevenue / Math.max(totalDays, 1) : 0
+        ...booking,
+        nights,
+        total_price: parseFloat(booking.cost || 0),
+        status: booking.status_booking_transaction?.status || 'unknown'
       };
     });
-
-    // Calculate average occupancy rate across all spots
-    const averageOccupancyRate = Math.round(
-      spotPerformance.reduce((sum, spot) => sum + spot.occupancyRate, 0) / 
-      Math.max(spotPerformance.length, 1)
-    );
-
-    // Format response
-    const responseData = {
-      totalSpots: spotStats.length,
-      revenue: {
-        total: Number(bookingStats[0].total_revenue) || 0,
-        monthly: Number(bookingStats[0].monthly_revenue) || 0,
-        average: Number(bookingStats[0].average_revenue) || 0,
-        projected: Number(bookingStats[0].monthly_revenue * 1.1) || 0,
-        growth: Number(bookingStats[0].revenue_growth) || 0,
-        cancelled: Number(bookingStats[0].cancelled_revenue) || 0
-      },
-      bookings: {
-        total: Number(bookingStats[0].total_bookings),
-        monthly: Number(bookingStats[0].monthly_bookings),
-        averageDuration: Number(bookingStats[0].average_duration) || 0,
-        occupancyRate: averageOccupancyRate,
-        growth: Number(bookingStats[0].bookings_growth) || 0,
-        active: spotPerformance.reduce((sum, spot) => sum + spot.bookings, 0)
-      },
-      popularSpots: spotPerformance.sort((a, b) => b.bookings - a.bookings).slice(0, 5),
-      spotPerformance: spotPerformance.sort((a, b) => b.performance - a.performance),
-      recentBookings: recentBookings.map(b => ({
-        id: b.booking_id,
-        spotName: b.camping_spot.title,
-        guestName: b.users.full_name,
-        startDate: b.start_date.toISOString(),
-        endDate: b.end_date.toISOString(),
-        revenue: Number(b.cost),
-        status: b.status_booking_transaction.status.toLowerCase(),
-        cancelled: b.status_id === 3
-      }))
-    };
     
-    // Cache the response
-    dashboardCache.set(cacheKey, {
-      timestamp: now,
-      data: responseData
-    });
-    
-    res.json(responseData);
+    // Ensure response has proper content type
+    res.setHeader('Content-Type', 'application/json');
+    return res.json(enhancedBookings);
   } catch (error) {
-    errorWithContext('Dashboard', error, { path: '/analytics' });
-    res.status(500).json({ error: 'Failed to fetch dashboard data' });
+    console.error('Error fetching owner bookings from dashboard:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch owner bookings', 
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Debug endpoint to check user permissions
+ */
+router.get('/debug/permissions', authenticate, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'No user data in token' });
+    }
+    
+    // Return safe user data for debugging
+    res.json({
+      roles: {
+        isOwner: req.user.isowner === 1 || 
+                 req.user.isowner === '1' || 
+                 req.user.isowner === true ||
+                 req.user.isowner === 'true' ||
+                 req.user.isowner === 'yes' ||
+                 req.user.isowner === 'YES' ||
+                 Number(req.user.isowner) === 1
+      },
+      userData: {
+        user_id: req.user.user_id,
+        isowner: req.user.isowner,
+        isowner_type: typeof req.user.isowner
+      }
+    });
+  } catch (error) {
+    console.error('Permission check error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

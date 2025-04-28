@@ -1,9 +1,21 @@
+const express = require('express');
+const router = express.Router();
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const { authenticate } = require('../middlewares/auth'); // Add this line to import authentication middleware
+
 // Find the price suggestion endpoint or create it if it doesn't exist
 router.get('/:id/price-suggestion', async (req, res) => {
   try {
     const { id } = req.params;
+    const spotId = parseInt(id);
+    
+    if (isNaN(spotId)) {
+      return res.status(400).json({ error: 'Invalid camping spot ID' });
+    }
+    
     const spot = await prisma.camping_spot.findUnique({
-      where: { camping_spot_id: parseInt(id) },
+      where: { camping_spot_id: spotId },
       include: {
         location: true,
         bookings: true
@@ -37,7 +49,7 @@ router.get('/:id/price-suggestion', async (req, res) => {
     // Get the average price of similar spots in the area
     const similarSpots = await prisma.camping_spot.findMany({
       where: {
-        camping_spot_id: { not: parseInt(id) },
+        camping_spot_id: { not: spotId },
         location: {
           city: spot.location.city,
           country_id: spot.location.country_id
@@ -91,3 +103,66 @@ router.get('/:id/price-suggestion', async (req, res) => {
     res.status(500).json({ error: 'Failed to generate price suggestion' });
   }
 });
+
+/**
+ * Get camping spots for the authenticated owner
+ */
+router.get('/owner', authenticate, async (req, res) => {
+  try {
+    console.log('[camping-spots.js] Processing /owner route with auth:', !!req.user);
+    
+    // Force content type to be JSON for API endpoints
+    res.setHeader('Content-Type', 'application/json');
+    
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    // Check if the user is an owner
+    const isOwner = req.user.isowner === 1 || 
+                    req.user.isowner === '1' || 
+                    req.user.isowner === true ||
+                    req.user.isowner === 'true';
+    
+    if (!isOwner) {
+      return res.status(403).json({ 
+        error: 'Access denied',
+        message: 'Only owners can access their spots'
+      });
+    }
+    
+    const userId = req.user.user_id;
+    console.log(`Fetching camping spots for owner ID: ${userId}`);
+    
+    // Get all camping spots for this owner
+    const spots = await prisma.camping_spot.findMany({
+      where: {
+        owner_id: userId
+      },
+      include: {
+        images: true,
+        location: {
+          include: { country: true }
+        },
+        camping_spot_amenities: {
+          include: {
+            amenity: true
+          }
+        },
+        bookings: true
+      }
+    });
+    
+    console.log(`Found ${spots.length} camping spots for owner`);
+    return res.json(spots);
+  } catch (error) {
+    console.error('Owner Spots Error:', error);
+    return res.status(500).json({ 
+      error: 'Failed to fetch owner camping spots',
+      details: error.message
+    });
+  }
+});
+
+// Export the router
+module.exports = router;

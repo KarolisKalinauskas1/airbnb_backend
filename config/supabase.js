@@ -1,82 +1,89 @@
-/**
- * Supabase client configuration
- * Uses environment variables for configuration
- */
 const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
 
 // Get environment variables
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
 
-// Helper function to check if a URL is valid and not a placeholder
-function isValidUrl(url) {
-  if (!url) return false;
-  
-  // Check if URL is a generic placeholder
-  if (url.includes('your-project') || url.includes('example.')) {
-    return false;
-  }
-  
-  try {
-    new URL(url);
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
+// Check if Supabase is configured correctly
+const isConfigured = supabaseUrl && 
+                    (supabaseAnonKey || supabaseServiceKey) && 
+                    supabaseUrl.includes('supabase');
 
-// Helper function to check if a key looks valid
-function isValidKey(key) {
-  if (!key) return false;
-  if (key.includes('your_') || key.includes('example')) return false;
-  return key.length > 10; // Most Supabase keys are quite long
-}
-
-// Check if we have valid configuration
-const hasValidConfig = isValidUrl(supabaseUrl) && 
-                      (isValidKey(supabaseServiceKey) || isValidKey(supabaseAnonKey));
-
-// Log configuration status
-console.log('\n----- SUPABASE CONFIGURATION -----');
-console.log(`URL: ${supabaseUrl || 'Not set'} (${isValidUrl(supabaseUrl) ? 'Valid' : 'Invalid'})`);
-console.log(`Service Key: ${supabaseServiceKey ? '***' : 'Not set'} (${isValidKey(supabaseServiceKey) ? 'Looks valid' : 'Invalid'})`);
-console.log(`Anon Key: ${supabaseAnonKey ? '***' : 'Not set'} (${isValidKey(supabaseAnonKey) ? 'Looks valid' : 'Invalid'})`);
-console.log(`Overall configuration: ${hasValidConfig ? 'VALID' : 'INVALID'}`);
-console.log('--------------------------------\n');
-
-let authClient = null;
+// Initialize clients
 let adminClient = null;
+let publicClient = null;
 
-if (isValidUrl(supabaseUrl) && isValidKey(supabaseServiceKey)) {
-  try {
-    adminClient = createClient(supabaseUrl, supabaseServiceKey);
-    console.log('✅ Supabase admin client initialized');
-  } catch (error) {
-    console.error('❌ Error creating Supabase admin client:', error.message);
-    throw new Error('Failed to initialize Supabase admin client: ' + error.message);
+try {
+  if (isConfigured) {
+    // Create admin client with service role key for server-side operations
+    if (supabaseServiceKey) {
+      adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      console.log('Supabase admin client initialized');
+    } else {
+      console.warn('No Supabase service key available. Admin operations will be limited.');
+    }
+    
+    // Create public client with anon key for client operations
+    if (supabaseAnonKey) {
+      publicClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false
+        }
+      });
+      console.log('Supabase public client initialized');
+    } else {
+      console.warn('No Supabase anon key available. Public operations will be limited.');
+    }
+  } else {
+    console.warn('Supabase configuration is incomplete. Check your environment variables.');
   }
-} else {
-  console.error('⚠️ Supabase admin client not initialized - missing or invalid URL/SERVICE_KEY');
-  throw new Error('Supabase admin client configuration is invalid or missing');
+} catch (error) {
+  console.error('Failed to initialize Supabase client:', error.message);
 }
 
-if (isValidUrl(supabaseUrl) && isValidKey(supabaseAnonKey)) {
-  try {
-    authClient = createClient(supabaseUrl, supabaseAnonKey);
-    console.log('✅ Supabase auth client initialized');
-  } catch (error) {
-    console.error('❌ Error creating Supabase auth client:', error.message);
-    throw new Error('Failed to initialize Supabase auth client: ' + error.message);
+/**
+ * Test the Supabase connection
+ * @returns {Promise<Object>} Connection status
+ */
+async function testConnection() {
+  if (!adminClient && !publicClient) {
+    return { 
+      configured: false, 
+      error: 'Supabase clients not initialized'
+    };
   }
-} else {
-  console.error('⚠️ Supabase auth client not initialized - missing or invalid URL/ANON_KEY');
-  throw new Error('Supabase auth client configuration is invalid or missing');
+  
+  try {
+    const client = adminClient || publicClient;
+    const { data, error } = await client.auth.getSession();
+    
+    if (error) throw error;
+    
+    return {
+      configured: true,
+      connected: true,
+      serviceKeyAvailable: !!adminClient,
+      anonKeyAvailable: !!publicClient
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      connected: false,
+      error: error.message
+    };
+  }
 }
 
 module.exports = {
-  authClient,
   adminClient,
-  isConfigured: hasValidConfig
+  publicClient,
+  isConfigured,
+  testConnection
 };

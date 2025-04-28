@@ -1,101 +1,47 @@
 const express = require('express');
-const router = express.Router();
 const path = require('path');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
-const { debug } = require('../utils/logger');
+const router = express.Router();
 
-/* GET home page. */
-router.get('/', function(req, res) {
-  debug('Routes', 'Handling root request');
-  
-  // Check if the request wants JSON or HTML
-  const wantsJson = req.headers.accept && req.headers.accept.includes('application/json');
-  
-  if (wantsJson) {
-    return res.json({ status: 'ok', version: process.env.npm_package_version || '1.0.0' });
-  }
-  
-  // Only redirect HTML requests, not API requests
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-});
-
-/* Health check endpoint */
-router.get('/health', function(req, res) {
+/**
+ * @route   GET /api
+ * @desc    API information endpoint
+ * @access  Public
+ */
+router.get('/api', (req, res) => {
   res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    acceptHeader: req.headers.accept
+    name: 'Airbnb for Camping API',
+    version: '1.0.0',
+    endpoints: [
+      '/api/auth',
+      '/api/camping-spots',
+      '/api/bookings',
+      '/api/users',
+      '/api/dashboard',
+      '/api/health'
+    ],
+    status: 'online',
+    timestamp: new Date().toISOString()
   });
 });
 
-/* GET dashboard redirects */
-// Update these routes to avoid redirection and instead serve the SPA directly
-router.get('/dashboard', function(req, res) {
-  // If requesting JSON, forward to the API
+/**
+ * @route   GET /
+ * @desc    Root endpoint, serves SPA or API info
+ * @access  Public
+ */
+router.get('/', (req, res) => {
+  // If client is requesting JSON, return API info
   if (req.headers.accept && req.headers.accept.includes('application/json')) {
-    return res.redirect('/api/dashboard/analytics');
-  }
-  
-  // Otherwise, serve the SPA
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-});
-
-router.get('/dashboard/analytics', function(req, res) {
-  // If requesting JSON, forward to the API
-  if (req.headers.accept && req.headers.accept.includes('application/json')) {
-    return res.redirect('/api/dashboard/analytics');
-  }
-  
-  // Otherwise, serve the SPA
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-});
-
-router.get('/dashboard/spots', function(req, res) {
-  // If requesting JSON, forward to the API
-  if (req.headers.accept && req.headers.accept.includes('application/json')) {
-    return res.redirect('/api/dashboard/spots');
-  }
-  
-  // Otherwise, serve the SPA
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-});
-
-// Test endpoint for CORS
-router.options('/cors-test', (req, res) => {
-  res.status(200).send('Preflight request successful');
-});
-
-router.get('/cors-test', (req, res) => {
-  res.status(200).json({ 
-    message: 'CORS test successful',
-    headers: {
-      'access-control-allow-credentials': res.getHeader('Access-Control-Allow-Credentials'),
-      'access-control-allow-origin': res.getHeader('Access-Control-Allow-Origin')
-    },
-    origin: req.headers.origin || 'No origin header'
-  });
-});
-
-// Add a database health check endpoint
-router.get('/db-check', async (req, res) => {
-  try {
-    // Perform a simple database query to check connection
-    const count = await prisma.$queryRaw`SELECT COUNT(*) as count FROM public_users`;
-    res.status(200).json({ 
-      status: 'ok', 
-      message: 'Database connection successful',
-      data: count
-    });
-  } catch (error) {
-    console.error('Database connection error:', error);
-    res.status(500).json({ 
-      status: 'error', 
-      message: 'Database connection failed',
-      error: error.message
+    return res.json({
+      name: 'Airbnb for Camping API',
+      message: 'Welcome to the Airbnb for Camping API',
+      docs: '/api',
+      status: 'online'
     });
   }
+  
+  // Otherwise serve the SPA
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
 // This should be the LAST route

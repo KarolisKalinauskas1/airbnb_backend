@@ -471,17 +471,16 @@ model transaction {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model public_users {
-  user_id       Int        @id @default(autoincrement())
-  full_name     String     @db.VarChar(45)
-  email         String     @unique @db.VarChar(45)
-  phone_number  String?    @db.VarChar(45)
-  date_of_birth String     @db.VarChar(45)
-  verified      String     @db.VarChar(45)
-  isowner       String?    @db.VarChar(1)
-  created_at    DateTime   @db.Date
-  auth_user_id  String?    @db.Uuid
-  bookings      bookings[]
-  review        review[]
+  user_id      Int        @id @default(autoincrement())
+  full_name    String     @db.VarChar(45)
+  email        String     @unique @db.VarChar(45)
+  verified     String     @db.VarChar(45)
+  isowner      Decimal?   @db.Decimal
+  created_at   DateTime   @db.Date
+  updated_at   DateTime   @db.Date
+  auth_user_id String?    @db.VarChar
+  bookings     bookings[]
+  review       review[]
 
   @@map("users")
   @@schema("public")

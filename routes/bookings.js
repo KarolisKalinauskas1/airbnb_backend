@@ -4,27 +4,21 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { authenticate } = require('../middlewares/auth');
-const { logStripeSession } = require('../utils/session-logger');
 
-// Test connection endpoint
-router.post('/test-connection', (req, res) => {
-  try {
-    console.log('Test connection request received:', req.body);
-    res.json({ 
-      success: true, 
-      message: 'Connection successful',
-      received: req.body
-    });
-  } catch (error) {
-    console.error('Test connection error:', error);
-    res.status(500).json({ error: 'Test connection failed', details: error.message });
-  }
-});
+// CORS helpers
+const { applyEmergencyCorsHeaders, logCorsDebugInfo } = require('../utils/cors-helpers');
 
-// Create a checkout session for Stripe
+// Create checkout session for a booking
 router.post('/create-checkout-session', authenticate, async (req, res) => {
   try {
     console.log('Create checkout session request body:', req.body);
+    
+    if (!req.user) {
+      return res.status(401).json({ 
+        error: 'Authentication required',
+        details: 'Please log in to continue with your booking'
+      });
+    }
     
     // Extract required fields from the request
     const { 
@@ -34,43 +28,43 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
       end_date, 
       number_of_guests, 
       cost,
-      service_fee,
-      total,
       spot_name,
       spot_image
     } = req.body;
     
     // Basic validation
-    if (!camper_id || !user_id || !start_date || !end_date || !number_of_guests || !total) {
-      console.error('Missing required fields:', req.body);
+    if (!camper_id || !user_id || !start_date || !end_date || !number_of_guests) {
       return res.status(400).json({ error: 'Missing required fields for checkout' });
     }
 
-    // Ensure the dates are valid
-    const startDate = new Date(start_date);
-    const endDate = new Date(end_date);
-    
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      return res.status(400).json({ error: 'Invalid dates' });
-    }
-    
-    if (endDate <= startDate) {
-      return res.status(400).json({ error: 'End date must be after start date' });
-    }
-    
-    // Check that the camping spot exists
+    // Check that camper_id exists
     const campingSpot = await prisma.camping_spot.findUnique({
       where: { camping_spot_id: parseInt(camper_id) },
       include: {
-        images: true,
         bookings: {
           where: {
-            status_id: { in: [1, 2, 5] }, // Pending, Confirmed, or Unavailable
-            OR: [
+            AND: [
+              { status_id: { in: [2, 4, 5] } }, // Confirmed, completed, or unavailable
               {
-                AND: [
-                  { start_date: { lte: endDate } },
-                  { end_date: { gte: startDate } }
+                OR: [
+                  {
+                    AND: [
+                      { start_date: { lte: new Date(start_date) } },
+                      { end_date: { gte: new Date(start_date) } }
+                    ]
+                  },
+                  {
+                    AND: [
+                      { start_date: { lte: new Date(end_date) } },
+                      { end_date: { gte: new Date(end_date) } }
+                    ]
+                  },
+                  {
+                    AND: [
+                      { start_date: { gte: new Date(start_date) } },
+                      { end_date: { lte: new Date(end_date) } }
+                    ]
+                  }
                 ]
               }
             ]
@@ -78,7 +72,7 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
         }
       }
     });
-    
+
     if (!campingSpot) {
       return res.status(404).json({ error: 'Camping spot not found' });
     }
@@ -92,6 +86,8 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
     }
     
     // Calculate nights
+    const startDate = new Date(start_date);
+    const endDate = new Date(end_date);
     const nights = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
     
     // Use the current camping spot price to ensure accuracy
@@ -129,34 +125,25 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
     // Get the frontend URL from environment variables or use a default
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     
-    console.log('Using frontend URL for redirects:', frontendUrl);
-    
-    // Create the Stripe Checkout session
+    // Create the checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: lineItems,
       mode: 'payment',
       success_url: `${frontendUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/booking-failed`,
+      cancel_url: `${frontendUrl}/camper/${camper_id}`,
       metadata: {
-        camper_id: camper_id.toString(),
-        user_id: user_id.toString(),
+        camper_id,
+        user_id,
         start_date,
         end_date,
-        number_of_guests: number_of_guests.toString(),
-        cost: basePrice.toString(),
-        service_fee: serviceFeeAmount.toString(),
-        total: totalAmount.toString()
-      }
+        number_of_guests
+      },
     });
     
-    console.log('Created checkout session:', session.id);
-    console.log('Success URL:', `${frontendUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`);
-    
-    // Return the checkout URL to redirect the user to Stripe
-    res.json({ url: session.url });
+    res.json({ url: session.url, session_id: session.id });
   } catch (error) {
-    console.error('Create checkout session error:', error);
+    console.error('Checkout session error:', error);
     res.status(500).json({
       error: 'Failed to create checkout session',
       details: error.message
@@ -165,7 +152,11 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
 });
 
 // Handle success route with session_id as query param
-router.get('/success', async (req, res) => {
+router.get('/stripe-success', async (req, res) => {
+  // Apply emergency CORS headers for this problematic endpoint
+  logCorsDebugInfo(req);
+  applyEmergencyCorsHeaders(req, res);
+  
   try {
     const { session_id } = req.query;
     
@@ -178,98 +169,99 @@ router.get('/success', async (req, res) => {
     // Set proper content type for API response
     res.setHeader('Content-Type', 'application/json');
     
-    try {
-      // Retrieve the Stripe session to get metadata
-      const session = await stripe.checkout.sessions.retrieve(session_id);
-      console.log('Retrieved session data:', { 
-        id: session.id,
-        payment_status: session.payment_status,
-        metadata: session.metadata
+    // Retrieve the Stripe session to get metadata
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+    console.log('Retrieved session data:', { 
+      id: session.id,
+      payment_status: session.payment_status,
+      metadata: session.metadata
+    });
+      
+    // Extract the metadata from the session
+    const { 
+      camper_id, 
+      user_id, 
+      start_date, 
+      end_date, 
+      number_of_guests
+    } = session.metadata;
+      
+    // Look for existing bookings that match this session's data
+    const existingBookings = await prisma.bookings.findMany({
+      where: {
+        camper_id: parseInt(camper_id),
+        user_id: parseInt(user_id),
+        start_date: new Date(start_date),
+        end_date: new Date(end_date),
+        created_at: { gte: new Date(Date.now() - 3600000) } // Last hour
+      },
+      orderBy: { booking_id: 'desc' }
+    });
+      
+    let booking;
+      
+    if (existingBookings.length > 0) {
+      booking = existingBookings[0];
+      console.log(`Found existing booking ID: ${booking.booking_id} for session: ${session_id}`);
+    } else {
+      console.log(`Creating new booking for session ${session_id}`);
+        
+      // Get the actual camping spot price
+      const campingSpot = await prisma.camping_spot.findUnique({
+        where: { camping_spot_id: parseInt(camper_id) }
       });
-      
-      // Extract the metadata from the session
-      const { 
-        camper_id, 
-        user_id, 
-        start_date, 
-        end_date, 
-        number_of_guests
-      } = session.metadata;
-      
-      // Look for existing bookings that match this session's data
-      const existingBookings = await prisma.bookings.findMany({
-        where: {
-          camper_id: parseInt(camper_id),
-          user_id: parseInt(user_id),
-          start_date: new Date(start_date),
-          end_date: new Date(end_date),
-          created_at: { gte: new Date(Date.now() - 3600000) } // Last hour
-        },
-        orderBy: { booking_id: 'desc' }
-      });
-      
-      let booking;
-      
-      if (existingBookings.length > 0) {
-        booking = existingBookings[0];
-        console.log(`Found existing booking ID: ${booking.booking_id} for session: ${session_id}`);
-      } else {
-        console.log(`Creating new booking for session ${session_id}`);
         
-        // Get the actual camping spot price
-        const campingSpot = await prisma.camping_spot.findUnique({
-          where: { camping_spot_id: parseInt(camper_id) }
-        });
-        
-        if (!campingSpot) {
-          return res.status(404).json({ error: 'Camping spot not found' });
-        }
-        
-        // Calculate nights
-        const start = new Date(start_date);
-        const end = new Date(end_date);
-        const nightCount = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
-        
-        // Calculate base price
-        const actualBasePrice = campingSpot.price_per_night * nightCount;
-        
-        try {
-          // Create a new booking
-          booking = await prisma.bookings.create({
-            data: {
-              camper_id: parseInt(camper_id),
-              user_id: parseInt(user_id),
-              start_date: new Date(start_date),
-              end_date: new Date(end_date),
-              number_of_guests: parseInt(number_of_guests),
-              cost: actualBasePrice,
-              created_at: new Date(),
-              status_id: 2 // CONFIRMED
-            }
-          });
-          
-          // Create a transaction record
-          await prisma.transaction.create({
-            data: {
-              amount: parseFloat(session.amount_total / 100), // Convert from cents
-              status_id: 2, // CONFIRMED
-              booking_id: booking.booking_id
-            }
-          });
-          
-          console.log(`Created new booking ID ${booking.booking_id} for session ${session_id}`);
-        } catch (dbError) {
-          console.error('Database error creating booking:', dbError);
-          throw dbError;
-        }
+      if (!campingSpot) {
+        return res.status(404).json({ error: 'Camping spot not found' });
       }
-      
-      // Return the booking ID for the frontend
-      return res.json({ booking_id: booking.booking_id });
-    } catch (stripeError) {
-      console.error('Stripe session error:', stripeError);
-      throw new Error(`Failed to process Stripe session: ${stripeError.message}`);
+        
+      // Calculate nights
+      const start = new Date(start_date);
+      const end = new Date(end_date);
+      const nightCount = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+        
+      // Calculate base price
+      const actualBasePrice = campingSpot.price_per_night * nightCount;
+        
+      try {
+        // Create a new booking
+        booking = await prisma.bookings.create({
+          data: {
+            camper_id: parseInt(camper_id),
+            user_id: parseInt(user_id),
+            start_date: new Date(start_date),
+            end_date: new Date(end_date),
+            number_of_guests: parseInt(number_of_guests),
+            cost: actualBasePrice,
+            created_at: new Date(),
+            status_id: 2 // CONFIRMED
+          }
+        });
+          
+        // Create a transaction record
+        await prisma.transaction.create({
+          data: {
+            amount: parseFloat(session.amount_total / 100), // Convert from cents
+            status_id: 2, // CONFIRMED
+            booking_id: booking.booking_id
+          }
+        });
+          
+        console.log(`Created new booking ID ${booking.booking_id} for session ${session_id}`);
+      } catch (dbError) {
+        console.error('Database error creating booking:', dbError);
+        throw dbError;
+      }
     }
+      
+    // Return the booking ID for the frontend with more booking details
+    return res.json({ 
+      booking_id: booking.booking_id,
+      start_date: booking.start_date,
+      end_date: booking.end_date,
+      cost: booking.cost,
+      status_id: booking.status_id
+    });
   } catch (error) {
     console.error('Success route error:', error);
     res.status(500).json({ 
@@ -279,7 +271,114 @@ router.get('/success', async (req, res) => {
   }
 });
 
-// Get booking details
+// Get bookings for the authenticated owner
+// NOTE: This route must be defined BEFORE the '/:id' route to prevent conflicts
+router.get('/owner', authenticate, async (req, res) => {
+  try {
+    console.log('Processing /bookings/owner request');
+    
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    // Check if user is owner
+    const isOwner = req.user.isowner === 1 || 
+                    req.user.isowner === '1' || 
+                    req.user.isowner === true ||
+                    req.user.isowner === 'true' ||
+                    req.user.isowner === 'yes' ||
+                    req.user.isowner === 'YES' ||
+                    Number(req.user.isowner) === 1;
+    
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only owners can access this endpoint' });
+    }
+    
+    // Apply CORS headers for this endpoint
+    res.setHeader('Content-Type', 'application/json');
+    
+    // Get all camping spots for this owner
+    const ownerCampingSpots = await prisma.camping_spot.findMany({
+      where: {
+        owner_id: req.user.user_id
+      },
+      select: {
+        camping_spot_id: true
+      }
+    });
+    
+    if (ownerCampingSpots.length === 0) {
+      // Return empty array if the owner has no camping spots
+      return res.json([]);
+    }
+    
+    const campingSpotIds = ownerCampingSpots.map(spot => spot.camping_spot_id);
+    
+    // Get all bookings for those camping spots
+    const bookings = await prisma.bookings.findMany({
+      where: {
+        camper_id: {
+          in: campingSpotIds
+        }
+      },
+      include: {
+        camping_spot: {
+          select: {
+            title: true,
+            price_per_night: true,
+            camping_spot_id: true,
+            images: {
+              select: {
+                image_url: true
+              },
+              take: 1
+            },
+            location: {
+              select: {
+                city: true,
+                country: {
+                  select: { name: true }
+                }
+              }
+            }
+          }
+        },
+        users: {
+          select: {
+            full_name: true,
+            email: true
+          }
+        },
+        status_booking_transaction: true
+      },
+      orderBy: {
+        created_at: 'desc'
+      }
+    });
+
+    // Add calculated properties to bookings
+    const enhancedBookings = bookings.map(booking => {
+      // Calculate number of nights
+      const startDate = new Date(booking.start_date);
+      const endDate = new Date(booking.end_date);
+      const nights = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24));
+      
+      return {
+        ...booking,
+        nights,
+        total_price: parseFloat(booking.cost || 0),
+        status: booking.status_booking_transaction?.status || 'unknown'
+      };
+    });
+
+    res.json(enhancedBookings);
+  } catch (error) {
+    console.error('Error fetching owner bookings:', error);
+    res.status(500).json({ error: 'Failed to fetch bookings', details: error.message });
+  }
+});
+
+// Get booking details - PUT THIS AFTER THE /owner ROUTE
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
@@ -287,22 +386,19 @@ router.get('/:id', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Valid booking ID is required' });
     }
     
-    // Get user ID from authenticated user
-    const userId = req.supabaseUser.id;
+    // Make sure id is a valid integer
+    const bookingId = parseInt(id);
+    if (isNaN(bookingId)) {
+      return res.status(400).json({ error: 'Booking ID must be a valid number' });
+    }
     
-    // Get the internal user ID for the authenticated user
-    const userRecord = await prisma.public_users.findFirst({
-      where: {
-        auth_user_id: userId
-      }
-    });
-    
-    if (!userRecord) {
-      return res.status(404).json({ error: 'User not found' });
+    // Must have authenticated user
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
     }
     
     const booking = await prisma.bookings.findUnique({
-      where: { booking_id: parseInt(id) },
+      where: { booking_id: bookingId },
       include: {
         camping_spot: {
           include: {
@@ -325,8 +421,8 @@ router.get('/:id', authenticate, async (req, res) => {
     }
     
     // Security check: Users can only access their own bookings or bookings for spots they own
-    const isOwner = booking.camping_spot.owner_id === userRecord.user_id;
-    const isBooker = booking.user_id === userRecord.user_id;
+    const isOwner = booking.camping_spot.owner_id === req.user.user_id;
+    const isBooker = booking.user_id === req.user.user_id;
     
     if (!isBooker && !isOwner) {
       return res.status(403).json({ error: 'Access denied: You do not have permission to view this booking' });
@@ -339,26 +435,22 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
-// Cancel booking
-router.post('/:id/cancel', authenticate, async (req, res) => {
+// Update booking status
+router.put('/:id/status', authenticate, async (req, res) => {
   try {
     const bookingId = parseInt(req.params.id);
     if (isNaN(bookingId)) {
       return res.status(400).json({ error: 'Valid booking ID is required' });
     }
     
-    // Get user ID from authenticated user
-    const userId = req.supabaseUser.id;
+    // Must have authenticated user
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
     
-    // Get the internal user ID for the authenticated user
-    const userRecord = await prisma.public_users.findFirst({
-      where: {
-        auth_user_id: userId
-      }
-    });
-    
-    if (!userRecord) {
-      return res.status(404).json({ error: 'User not found' });
+    const { status_id } = req.body;
+    if (!status_id) {
+      return res.status(400).json({ error: 'Status ID is required' });
     }
     
     // Start a transaction
@@ -380,18 +472,21 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
         throw new Error('Booking not found');
       }
       
-      // Security check: Users can only cancel their own bookings or bookings for spots they own
-      const isOwner = booking.camping_spot.owner_id === userRecord.user_id;
-      const isBooker = booking.user_id === userRecord.user_id;
+      // Security check: Users can only update their own bookings or bookings for spots they own
+      const isOwner = booking.camping_spot.owner_id === req.user.user_id;
+      const isBooker = booking.user_id === req.user.user_id;
       
       if (!isBooker && !isOwner) {
-        throw new Error('Access denied: You do not have permission to cancel this booking');
+        throw new Error('Access denied: You do not have permission to update this booking');
       }
       
-      // Update booking status to CANCELLED (3)
+      // Update booking status
       const updatedBooking = await tx.bookings.update({
         where: { booking_id: bookingId },
-        data: { status_id: 3 }, // CANCELLED
+        data: { 
+          status_id: status_id,
+          updated_at: new Date()
+        },
         include: {
           status_booking_transaction: true,
           camping_spot: {
@@ -408,51 +503,22 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
         }
       });
       
-      // Update existing transaction status instead of creating a new one
+      // Update transaction status if it exists
       if (booking.transaction && booking.transaction.length > 0) {
         await tx.transaction.updateMany({
           where: { booking_id: booking.booking_id },
-          data: { status_id: 3 } // CANCELLED
+          data: { status_id: status_id }
         });
       }
       
       return updatedBooking;
     });
     
-    console.log(`Booking ${bookingId} cancelled successfully`);
+    console.log(`Booking ${bookingId} status updated to ${status_id}`);
     res.json(result);
   } catch (error) {
-    console.error('Cancel booking error:', error);
-    res.status(500).json({ error: 'Failed to cancel booking', details: error.message });
-  }
-});
-
-// Debug endpoint for Stripe sessions - useful for troubleshooting
-router.get('/debug-session/:sessionId', async (req, res) => {
-  try {
-    if (process.env.NODE_ENV !== 'development') {
-      return res.status(403).json({ error: 'This endpoint is only available in development mode' });
-    }
-    
-    const { sessionId } = req.params;
-    
-    // Retrieve the session from Stripe
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-    
-    // Return sanitized session data
-    res.json({
-      id: session.id,
-      status: session.status,
-      payment_status: session.payment_status,
-      amount_total: session.amount_total,
-      currency: session.currency,
-      customer: session.customer,
-      metadata: session.metadata,
-      created: new Date(session.created * 1000).toISOString()
-    });
-  } catch (error) {
-    console.error('Debug session error:', error);
-    res.status(500).json({ error: 'Failed to retrieve session', details: error.message });
+    console.error('Update booking status error:', error);
+    res.status(500).json({ error: 'Failed to update booking status', details: error.message });
   }
 });
 

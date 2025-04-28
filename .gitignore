@@ -1,2 +1,43 @@
+# Dependencies
 node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Environment variables
 .env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+coverage/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Prisma
+/prisma/migrations/
+/prisma/*.db
+
+# Uploads
+/uploads/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.mp4
+*.mov
+
+# Debug
+debug/
+debug.log
