@@ -28,6 +28,52 @@ function toRad(value) {
   return value * Math.PI / 180;
 }
 
+// New function to find locations within a specific radius
+async function findLocationsWithinRadius(centerLocation, radiusKm) {
+  try {
+    if (!centerLocation) {
+      return [];
+    }
+
+    // Get coordinates for the center location
+    const centerCoords = await geocodeAddress(centerLocation);
+    if (!centerCoords || !centerCoords.latitude || !centerCoords.longitude) {
+      console.warn(`Could not geocode center location: ${centerLocation}`);
+      return [];
+    }
+
+    // In a production app, you would query the database directly with a geo query
+    // For this implementation, we'll get all locations and filter in-memory
+    const { PrismaClient } = require('@prisma/client');
+    const prisma = new PrismaClient();
+    
+    const allLocations = await prisma.location.findMany({
+      include: {
+        country: true
+      }
+    });
+    
+    // Filter locations that are within the radius
+    const locationsInRadius = allLocations.filter(location => {
+      if (!location.latitude || !location.longitude) return false;
+      
+      const distance = calculateDistance(
+        centerCoords.latitude, 
+        centerCoords.longitude,
+        location.latitude,
+        location.longitude
+      );
+      
+      return distance <= radiusKm;
+    });
+    
+    return locationsInRadius;
+  } catch (error) {
+    console.error('Error finding locations within radius:', error);
+    return [];
+  }
+}
+
 // Generate cache key for geocoding
 function getCacheKey(address) {
   if (!address) return 'unknown';
@@ -94,7 +140,7 @@ async function geocodeAddress(address) {
   
   try {
     // Generate a cache key from the address components
-    const cacheKey = getCacheKey(address);
+    const cacheKey = typeof address === 'string' ? address.toLowerCase() : getCacheKey(address);
     
     // Check if we have a cached result
     if (geocodingCache[cacheKey]) {
@@ -118,104 +164,103 @@ async function geocodeAddress(address) {
     }
     
     // Use Nominatim OpenStreetMap for geocoding (free)
-    const query = encodeURIComponent(
-      `${address.address_line1 || ''} ${address.address_line2 || ''} ${address.city || ''} ${address.postal_code || ''}`
-    );
-    
-    try {
-      const response = await axios.get(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${query}&limit=1`,
-        {
-          headers: {
-            'User-Agent': 'Camping_App/1.0' // Required by Nominatim's ToS
-          },
-          timeout: 5000
-        }
+    // Handling both string location names and address objects
+    let queryString;
+    if (typeof address === 'string') {
+      queryString = encodeURIComponent(address);
+    } else {
+      queryString = encodeURIComponent(
+        `${address.address_line1 || ''}, ${address.postal_code || ''} ${address.city || ''}, ${address.country_id || ''}`
       );
+    }
+    
+    const response = await axios.get(`https://nominatim.openstreetmap.org/search?q=${queryString}&format=json&limit=1`);
+    
+    if (response.data && response.data.length > 0) {
+      const result = {
+        latitude: parseFloat(response.data[0].lat),
+        longitude: parseFloat(response.data[0].lon)
+      };
       
-      let result;
-      
-      if (response?.data && Array.isArray(response.data) && response.data.length > 0) {
-        result = {
-          latitude: parseFloat(response.data[0].lat) || 0,
-          longitude: parseFloat(response.data[0].lon) || 0
-        };
-      } else {
-        console.warn('Location not found via API for address:', query);
-        result = generateFallbackCoordinates(address);
-      }
-      
-      // Store in cache
+      // Cache the result
       geocodingCache[cacheKey] = result;
-      
-      // Save cache periodically (only when new entries are added)
-      setTimeout(() => {
-        saveCacheSync();
-      }, 100);
+      saveCacheSync();
       
       return result;
-    } catch (requestError) {
-      console.error('API request error:', requestError.message);
+    } else {
+      console.warn(`No geocoding results for: ${queryString}`);
       return generateFallbackCoordinates(address);
     }
   } catch (error) {
-    console.error('Geocoding error:', error.message);
-    return { latitude: 50.85, longitude: 4.35 }; // Brussels
+    console.error('Geocoding error:', error);
+    return generateFallbackCoordinates(address);
   }
 }
 
-// Generate coordinates based on postal code or other address data
+// Fallback coordinate generation - deterministic but not accurate
 function generateFallbackCoordinates(address) {
-  try {
-    // Default to center of Belgium
-    let baseLat = 50.85;
-    let baseLng = 4.35;
+  console.log('Using fallback coordinate generation');
+  
+  // Return Brussels as default if we have nothing to work with
+  if (!address) {
+    return { latitude: 50.85, longitude: 4.35 }; // Brussels
+  }
+  
+  // Default map center and offsets
+  let baseLatitude = 50.85; // Brussels latitude
+  let baseLongitude = 4.35; // Brussels longitude
+  
+  // If we have a string, try to match known locations
+  if (typeof address === 'string') {
+    address = address.toLowerCase();
     
-    // Create a more unique seed from the address
-    let seed = 0;
-    if (address.postal_code) {
-      // Extract numbers from postal code
-      const postalNumbers = address.postal_code.replace(/\D/g, '');
-      if (postalNumbers.length > 0) {
-        seed += parseInt(postalNumbers);
+    // Very basic location mapping - in a real app you'd have a proper database
+    const knownLocations = {
+      'brussels': { latitude: 50.85, longitude: 4.35 },
+      'antwerp': { latitude: 51.22, longitude: 4.40 },
+      'ghent': { latitude: 51.05, longitude: 3.72 },
+      'bruges': { latitude: 51.21, longitude: 3.22 },
+      'leuven': { latitude: 50.88, longitude: 4.70 },
+      'liege': { latitude: 50.63, longitude: 5.57 },
+      'namur': { latitude: 50.47, longitude: 4.87 },
+      'charleroi': { latitude: 50.41, longitude: 4.44 },
+      'mons': { latitude: 50.45, longitude: 3.95 },
+      'ostend': { latitude: 51.23, longitude: 2.92 }
+    };
+    
+    // Check if we have coordinates for this location
+    for (const [key, coords] of Object.entries(knownLocations)) {
+      if (address.includes(key)) {
+        return coords;
       }
     }
     
-    // Add city name to the seed
-    if (address.city) {
-      seed += address.city.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    }
-    
-    // Add street address to the seed
-    if (address.address_line1) {
-      seed += address.address_line1.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    }
-    
-    // Generate more unique variations
-    // Use sine and cosine to create more natural-looking variations
-    const latVariation = Math.sin(seed) * 0.1; // Up to 0.1 degrees variation
-    const lngVariation = Math.cos(seed) * 0.1; // Up to 0.1 degrees variation
-    
-    const latitude = baseLat + latVariation;
-    const longitude = baseLng + lngVariation;
-    
-    // Round to 6 decimal places (about 11cm precision)
-    const result = {
-      latitude: parseFloat(latitude.toFixed(6)),
-      longitude: parseFloat(longitude.toFixed(6))
-    };
-    
-    console.log('Generated fallback coordinates:', {
-      address,
-      seed,
-      result
-    });
-    
-    return result;
-  } catch (error) {
-    console.error('Error generating fallback coordinates:', error.message);
-    return { latitude: 50.85, longitude: 4.35 }; // Brussels as ultimate fallback
+    // If no match, return Brussels as default
+    return { latitude: 50.85, longitude: 4.35 }; 
   }
+  
+  // If we have an address object, try to use postal code for deterministic offset
+  let offsetFactor = 0.01;
+  if (address.postal_code) {
+    // Use last digits of postal code to create a deterministic offset
+    const postalDigits = address.postal_code.match(/\d+/);
+    if (postalDigits && postalDigits[0]) {
+      const lastDigits = postalDigits[0].slice(-2);
+      if (lastDigits) {
+        const offset = parseInt(lastDigits) / 100;
+        return {
+          latitude: baseLatitude + (offset * 0.5),
+          longitude: baseLongitude + (offset * 0.5)
+        };
+      }
+    }
+  }
+  
+  // Fallback if no postal code
+  return {
+    latitude: baseLatitude + (Math.random() * offsetFactor),
+    longitude: baseLongitude + (Math.random() * offsetFactor)
+  };
 }
 
 // Register process exit handler
@@ -230,5 +275,6 @@ process.on('exit', () => {
 
 module.exports = { 
   geocodeAddress,
-  calculateDistance
+  calculateDistance,
+  findLocationsWithinRadius
 };

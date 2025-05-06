@@ -23,6 +23,16 @@ const loginUserSchema = z.object({
   })
 });
 
+// Schema for password change
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, {
+    message: "Current password is required"
+  }),
+  newPassword: z.string().min(8, {
+    message: "New password must be at least 8 characters"
+  })
+});
+
 // Schema for user creation (POST /api/users)
 const createUserSchema = z.object({
   email: z.string().email(),
@@ -35,5 +45,6 @@ const createUserSchema = z.object({
 module.exports = {
   registerUserSchema,
   loginUserSchema,
-  createUserSchema
+  createUserSchema,
+  changePasswordSchema
 };

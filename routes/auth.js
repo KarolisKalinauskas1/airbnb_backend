@@ -4,7 +4,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const { authenticate } = require('../middlewares/auth');
 const validate = require('../middlewares/validate');
-const { registerUserSchema, loginUserSchema } = require('../schemas/user-schemas');
+const { registerUserSchema, loginUserSchema, changePasswordSchema } = require('../schemas/user-schemas');
 const jwt = require('jsonwebtoken');
 const { generateToken } = require('../utils/jwt-helper');
 
@@ -480,7 +480,16 @@ router.post('/login', validate(loginUserSchema), async (req, res, next) => {
  */
 router.post('/register', validate(registerUserSchema), async (req, res, next) => {
   try {
+    console.log('\n\n==== POST /api/auth/register ENDPOINT CALLED ====');
+    console.log('Registration endpoint called with data:', { 
+      email: req.body.email,
+      has_password: !!req.body.password,
+      full_name: req.body.full_name,
+      is_seller: req.body.is_seller
+    });
+    
     if (!isConfigured) {
+      console.log('ERROR: Supabase is not configured');
       const error = new Error('Authentication service not configured');
       error.status = 503;
       throw error;
@@ -488,6 +497,18 @@ router.post('/register', validate(registerUserSchema), async (req, res, next) =>
 
     const { email, password, full_name, is_seller, license } = req.body;
     
+    // Check if user already exists in the database
+    console.log('Checking if user already exists in public_users table...');
+    const existingUser = await prisma.public_users.findUnique({
+      where: { email }
+    });
+    
+    if (existingUser) {
+      console.log('User already exists in public_users table:', existingUser.user_id);
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+    
+    console.log('Creating user in Supabase...');
     // Create user in Supabase
     const { data, error } = await adminClient.auth.signUp({
       email,
@@ -500,17 +521,31 @@ router.post('/register', validate(registerUserSchema), async (req, res, next) =>
       }
     });
     
-    if (error) throw error;
+    if (error) {
+      console.error('Supabase signup error:', error);
+      throw error;
+    }
     
     if (!data?.user) {
-      const error = new Error('Failed to create user');
+      console.error('No user data returned from Supabase');
+      const error = new Error('Failed to create user in authentication service');
       error.status = 500;
       throw error;
     }
     
+    console.log('Supabase user created successfully, ID:', data.user.id);
+    
     // Create user in our database
     let user;
     try {
+      console.log('Creating user in public_users table...');
+      console.log('Data for new user:', {
+        email,
+        full_name,
+        auth_user_id: data.user.id,
+        isowner: is_seller ? '1' : '0'
+      });
+      
       user = await prisma.public_users.create({
         data: {
           email,
@@ -523,8 +558,11 @@ router.post('/register', validate(registerUserSchema), async (req, res, next) =>
         }
       });
       
+      console.log('User created in public_users table, ID:', user.user_id);
+      
       // Create owner record if needed
       if (is_seller) {
+        console.log('Creating owner record...');
         await createOwnerIfNeeded(user.user_id, license);
       }
       
@@ -534,9 +572,16 @@ router.post('/register', validate(registerUserSchema), async (req, res, next) =>
       req.session.isowner = user.isowner;
       req.session.auth_user_id = user.auth_user_id;
       
+      console.log('Registration successful, session created, user ID:', user.user_id);
+      console.log('Registration successful, returning response');
       res.status(201).json({
         message: 'User registered successfully',
-        user: data.user,
+        user: {
+          user_id: user.user_id,
+          email: user.email,
+          full_name: user.full_name,
+          isowner: Number(user.isowner) || 0
+        },
         session: {
           userId: user.user_id,
           email: user.email,
@@ -546,15 +591,41 @@ router.post('/register', validate(registerUserSchema), async (req, res, next) =>
     } catch (dbError) {
       // If DB creation fails, delete the Supabase user
       console.error('Database error during registration:', dbError);
+      console.error('Error details:', dbError.stack);
+      console.error('Prisma error code:', dbError.code);
+      console.error('Prisma error meta:', dbError.meta);
+      
       try {
+        console.log('Cleaning up Supabase user after DB error...');
         await adminClient.auth.admin.deleteUser(data.user.id);
+        console.log('Supabase user deleted successfully');
       } catch (deleteError) {
         console.error('Failed to clean up Supabase user after DB error:', deleteError);
+      }
+      
+      // Check if this is a unique constraint violation (user already exists)
+      if (dbError.code === 'P2002') {
+        return res.status(400).json({ 
+          error: 'User with this email already exists',
+          details: 'A user with this email is already registered'
+        });
       }
       
       throw dbError;
     }
   } catch (error) {
+    console.error('Registration error:', error);
+    
+    if (!res.headersSent) {
+      if (error.status) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      return res.status(500).json({ 
+        error: 'Registration failed',
+        details: process.env.NODE_ENV === 'development' ? error.message : 'Please try again later'
+      });
+    }
+    
     next(error);
   }
 });
@@ -805,51 +876,65 @@ router.get('/heartbeat', authenticate, (req, res) => {
 });
 
 /**
- * Sync session route
- * Accepts a session token and validates it, then stores the session in backend
+ * @route   POST /api/auth/change-password
+ * @desc    Change user password (requires current password)
+ * @access  Private
  */
-router.post('/sync-session', (req, res) => {
-  // Explicitly set CORS headers for credential requests
-  const origin = req.headers.origin;
-  if (origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
-  res.header('Access-Control-Allow-Credentials', 'true');
-  
+router.post('/change-password', authenticate, validate(changePasswordSchema), async (req, res, next) => {
   try {
-    // Check if user has a valid session
-    if (req.session && req.session.userId) {
-      return res.json({
-        authenticated: true,
-        userId: req.session.userId,
-        email: req.session.email,
-        isowner: req.session.isowner || 0
-      });
-    } else {
-      return res.json({
-        authenticated: false
+    if (!isConfigured) {
+      const error = new Error('Authentication service not configured');
+      error.status = 503;
+      error.details = 'Supabase credentials are missing';
+      throw error;
+    }
+
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    // Get the user's email from the session
+    const email = req.user.email;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'User email not found in session' });
+    }
+    
+    // First verify the current password by attempting to sign in
+    const { error: signInError } = await adminClient.auth.signInWithPassword({
+      email,
+      password: currentPassword
+    });
+    
+    if (signInError) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+    
+    // Update the password in Supabase
+    const { error: updateError } = await adminClient.auth.admin.updateUserById(
+      req.user.auth_user_id,
+      { password: newPassword }
+    );
+    
+    if (updateError) {
+      throw updateError;
+    }
+    
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Password change error:', error);
+    
+    if (!res.headersSent) {
+      return res.status(error.status || 500).json({ 
+        error: 'Failed to change password',
+        message: error.message
       });
     }
-  } catch (error) {
-    console.error('Session sync error:', error);
-    res.status(500).json({ 
-      error: 'Failed to sync session',
-      message: error.message
-    });
+    
+    next(error);
   }
-});
-
-/**
- * Logout route
- * Clears the session on the backend
- */
-router.post('/logout', (req, res) => {
-  // If using session middleware, clear the session
-  if (req.session) {
-    req.session.destroy();
-  }
-  
-  res.json({ success: true });
 });
 
 module.exports = router;

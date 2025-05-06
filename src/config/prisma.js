@@ -1,6 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 
-// Create a single PrismaClient instance
+// Create a single PrismaClient instance with improved connection settings
 const prisma = new PrismaClient({
   log: process.env.NODE_ENV === 'production' 
     ? ['error'] 
@@ -9,21 +9,56 @@ const prisma = new PrismaClient({
     db: {
       url: process.env.DATABASE_URL
     }
+  },
+  // Add connection pool configuration
+  // Increase the connection timeout and reduce connection limit
+  __internal: {
+    engine: {
+      connectionLimit: 5, // Reduce from default to prevent pool exhaustion
+      connectionTimeout: 30000, // Increase timeout to 30 seconds
+      queueTimeout: 10000, // Queue timeout to 10 seconds
+    }
   }
 });
 
-// Test the connection
+// Add connection event listeners
+prisma.$on('query', e => {
+  console.log('Query: ' + e.query);
+  console.log('Duration: ' + e.duration + 'ms');
+});
+
+prisma.$on('error', e => {
+  console.error('Prisma error event:', e);
+});
+
+// Implement a more robust connection handling
+let isConnected = false;
+let connectionAttempts = 0;
+const MAX_RETRIES = 3;
+
+// Test the connection with retry mechanism
 async function connect() {
   try {
+    connectionAttempts++;
     // Test the connection with a simple query
     await prisma.$connect();
     
     // Test the public schema
     await prisma.$queryRaw`SELECT 1`;
     
-    console.log('Prisma connected successfully to Supabase');
+    console.log('Prisma connected successfully to database');
+    isConnected = true;
+    connectionAttempts = 0;
+    return true;
   } catch (err) {
-    console.error('Prisma connection error:', err);
+    console.error(`Prisma connection error (attempt ${connectionAttempts}/${MAX_RETRIES}):`, err);
+    
+    if (connectionAttempts < MAX_RETRIES) {
+      console.log(`Retrying connection in 5 seconds...`);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      return connect();
+    }
+    
     throw err;
   }
 }
@@ -34,14 +69,37 @@ connect()
     console.log('Database connection established');
   })
   .catch((err) => {
-    console.error('Failed to connect to database:', err);
-    process.exit(1);
+    console.error('Failed to connect to database after multiple attempts:', err);
+    // Don't exit - allow the app to start even if DB connection fails initially
+    // It will attempt reconnection when needed
   });
 
-// Handle process termination
+// Handle process termination - ensure proper disconnection
 process.on('beforeExit', async () => {
+  console.log('Process exiting, disconnecting Prisma...');
   await prisma.$disconnect();
 });
 
-// Export the PrismaClient instance
-module.exports = prisma; 
+// Handle uncaught exceptions and rejections
+process.on('uncaughtException', async (err) => {
+  console.error('Uncaught exception:', err);
+  await prisma.$disconnect();
+});
+
+process.on('unhandledRejection', async (err) => {
+  console.error('Unhandled rejection:', err);
+  // Don't disconnect here, as it might be related to the Prisma connection itself
+});
+
+// Export our reconnection function to be used by the app middleware
+// This allows reconnection attempts during request handling
+async function ensureConnection() {
+  if (!isConnected) {
+    return connect();
+  }
+  return true;
+}
+
+// Export both the PrismaClient instance and the connection helper
+module.exports = prisma;
+module.exports.ensureConnection = ensureConnection;

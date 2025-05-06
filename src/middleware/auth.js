@@ -1,5 +1,5 @@
 const rateLimit = require('express-rate-limit');
-const { prisma } = require('../config');
+const prisma = require('../config/prisma');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 
@@ -16,6 +16,81 @@ const authRateLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many authentication attempts, please try again later' }
 });
+
+/**
+ * Optional authentication middleware - doesn't require authentication
+ * but will populate req.user if a valid token is provided
+ */
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    console.log('Optional Auth middleware - Authorization header:', authHeader ? 'Present' : 'Missing');
+    
+    // If no auth header, just continue without authentication
+    if (!authHeader) {
+      console.log('Optional Auth middleware - No authorization header, continuing as public access');
+      return next();
+    }
+
+    const token = authHeader.split(' ')[1];
+    
+    // If no token, just continue without authentication
+    if (!token) {
+      console.log('Optional Auth middleware - Invalid token format, continuing as public access');
+      return next();
+    }
+
+    let user = null;
+    let decoded = null;
+
+    // Try verifying as JWT token
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      if (decoded) {
+        // Get user from database using email from token
+        const dbUser = await prisma.public_users.findUnique({
+          where: { 
+            email: decoded.email 
+          }
+        });
+        
+        if (dbUser) {
+          user = {
+            user_id: dbUser.user_id,
+            email: dbUser.email,
+            full_name: dbUser.full_name,
+            isowner: dbUser.isowner
+          };
+          console.log('Optional Auth middleware - User found in database:', user.email);
+        }
+      }
+    } catch (jwtError) {
+      console.log('Optional Auth middleware - JWT verification failed, continuing as public access');
+      // Continue as public access on JWT error
+    }
+
+    // If we found a user, attach to request
+    if (user) {
+      req.user = {
+        user_id: user.user_id,
+        email: user.email,
+        full_name: user.full_name,
+        isowner: Number(user.isowner) || 0
+      };
+      console.log('Optional Auth middleware - Authentication successful for user:', req.user.email);
+    } else {
+      console.log('Optional Auth middleware - Continuing as public access (no valid user)');
+    }
+    
+    next();
+  } catch (error) {
+    console.log('Optional Auth middleware - Error:', error.message);
+    // Continue even if there's an error
+    next();
+  }
+};
 
 /**
  * Authentication middleware
@@ -40,109 +115,81 @@ const authenticate = async (req, res, next) => {
     }
 
     let user = null;
-    let error = null;
+    let decoded = null;
 
-    // First try Supabase token
+    // Try verifying as JWT token
     try {
-      console.log('Auth middleware - Trying Supabase token...');
-      const { data: { user: supabaseUser }, error: supabaseError } = await supabase.auth.getUser(token);
-      if (supabaseUser) {
-        user = supabaseUser;
-      } else {
-        error = supabaseError;
+      console.log('Auth middleware - Verifying JWT token');
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log('Auth middleware - JWT verification successful, decoded:', decoded);
+      
+      if (decoded) {
+        // Get user from database using email from token
+        const dbUser = await prisma.public_users.findUnique({
+          where: { 
+            email: decoded.email 
+          }
+        });
+        
+        if (dbUser) {
+          user = {
+            user_id: dbUser.user_id,
+            email: dbUser.email,
+            full_name: dbUser.full_name,
+            isowner: dbUser.isowner
+          };
+          console.log('Auth middleware - User found in database:', user.email);
+        } else {
+          console.log('Auth middleware - User not found in database for email:', decoded.email);
+        }
       }
-    } catch (supabaseError) {
-      console.log('Auth middleware - Supabase token failed, trying custom token...');
-      error = supabaseError;
-    }
-
-    // If Supabase token failed, try custom token
-    if (!user) {
+    } catch (jwtError) {
+      console.error('Auth middleware - JWT verification failed:', jwtError.message);
+      
+      // If JWT fails, try Supabase token as fallback
       try {
-        console.log('Auth middleware - Verifying custom token...');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        if (decoded && decoded.user_id) {
-          // Get user from database
-          const publicUser = await prisma.public_users.findUnique({
-            where: { user_id: decoded.user_id }
+        console.log('Auth middleware - Trying Supabase token as fallback');
+        const { data: { user: supabaseUser }, error: supabaseError } = await supabase.auth.getUser(token);
+        
+        if (supabaseUser) {
+          // Find the corresponding user in our database
+          const dbUser = await prisma.public_users.findFirst({
+            where: {
+              email: supabaseUser.email
+            }
           });
           
-          if (publicUser) {
+          if (dbUser) {
             user = {
-              id: publicUser.auth_user_id,
-              email: publicUser.email,
-              user_metadata: { isowner: publicUser.isowner }
+              user_id: dbUser.user_id,
+              email: dbUser.email,
+              full_name: dbUser.full_name,
+              isowner: dbUser.isowner
             };
+            console.log('Auth middleware - Supabase user found in database:', user.email);
+          } else {
+            console.log('Auth middleware - Supabase user not found in database for email:', supabaseUser.email);
           }
         }
-      } catch (jwtError) {
-        console.error('Auth middleware - Custom token verification failed:', jwtError);
-        error = jwtError;
+      } catch (supabaseError) {
+        console.error('Auth middleware - Supabase token verification failed:', supabaseError);
       }
     }
 
     if (!user) {
-      console.error('Auth middleware - All token verification attempts failed:', error);
-      return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-
-    console.log('Auth middleware - Token verified successfully');
-
-    // Get user from database
-    console.log('Auth middleware - Fetching user from database...');
-    const publicUser = await prisma.public_users.findFirst({
-      where: {
-        auth_user_id: user.id
-      }
-    });
-
-    if (!publicUser) {
-      console.log('Auth middleware - User profile not found');
-      return res.status(404).json({ error: 'User profile not found' });
-    }
-    console.log('Auth middleware - User found in database');
-
-    // Log the raw data before constructing the user object
-    console.log('Auth middleware - Raw user data:', {
-      supabaseUser: {
-        id: user.id,
-        email: user.email,
-        metadata: user.user_metadata
-      },
-      publicUser: {
-        user_id: publicUser.user_id,
-        auth_user_id: publicUser.auth_user_id,
-        isowner: publicUser.isowner
-      }
-    });
-
-    // Construct the user object carefully
-    const userObject = {
-      // Supabase user data
-      id: user.id,
-      email: user.email,
-      user_metadata: user.user_metadata,
-      
-      // Public user data
-      user_id: publicUser.user_id,
-      auth_user_id: publicUser.auth_user_id,
-      isowner: Number(publicUser.isowner) || 0
-    };
-
-    // Validate the constructed user object
-    if (!userObject.user_id) {
-      console.error('Auth middleware - Invalid user object: missing user_id');
-      return res.status(400).json({ error: 'Invalid user data: missing user_id' });
-    }
-
-    if (typeof userObject.isowner === 'undefined') {
-      console.error('Auth middleware - Invalid user object: missing isowner');
-      return res.status(400).json({ error: 'Invalid user data: missing isowner' });
+      console.error('Auth middleware - Authentication failed: User not found');
+      return res.status(401).json({ error: 'Invalid token or user not found' });
     }
 
     // Attach user to request
-    req.user = userObject;
-    console.log('Auth middleware - Authentication successful');
+    req.user = {
+      user_id: user.user_id,
+      email: user.email,
+      full_name: user.full_name,
+      isowner: Number(user.isowner) || 0
+    };
+    
+    console.log('Auth middleware - Authentication successful for user:', req.user.email);
     next();
   } catch (error) {
     console.error('Auth middleware - Unexpected error:', error);
@@ -152,5 +199,6 @@ const authenticate = async (req, res, next) => {
 
 module.exports = {
   authenticate,
-  authRateLimiter
-}; 
+  authRateLimiter,
+  optionalAuthenticate
+};

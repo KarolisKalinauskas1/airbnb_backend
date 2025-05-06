@@ -398,10 +398,35 @@ router.put('/:id', authenticate, upload.array('images', 10), async (req, res, ne
       throw new ValidationError('Invalid location data');
     }
 
-    // Get coordinates from address with improved accuracy
-    const coordinates = await geocodeAddress(location);
-    if (!coordinates || !coordinates.latitude || !coordinates.longitude) {
-      throw new ValidationError('Could not geocode the provided address');
+    // Check if location fields were updated compared to the existing spot
+    const locationUpdated = location && (
+      location.address_line1 !== spot.location.address_line1 ||
+      location.address_line2 !== spot.location.address_line2 ||
+      location.city !== spot.location.city ||
+      location.postal_code !== spot.location.postal_code ||
+      parseInt(location.country_id) !== spot.location.country_id
+    );
+
+    // Always get coordinates if location was updated
+    let coordinates = { 
+      latitude: spot.location.latitute,
+      longitude: spot.location.longtitute 
+    };
+    
+    if (locationUpdated) {
+      console.log('Location updated, recalculating coordinates for:', location);
+      try {
+        const newCoordinates = await geocodeAddress(location);
+        if (newCoordinates && newCoordinates.latitude && newCoordinates.longitude) {
+          coordinates = newCoordinates;
+          console.log('New coordinates calculated:', coordinates);
+        } else {
+          console.warn('Failed to get coordinates, using fallback geocoding');
+        }
+      } catch (geocodeError) {
+        console.error('Error during geocoding:', geocodeError);
+        throw new ValidationError('Could not geocode the provided address. Please check the address and try again.');
+      }
     }
 
     // Start a transaction to ensure all updates are atomic
@@ -1031,4 +1056,4 @@ router.patch('/:id/price', authenticate, async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;

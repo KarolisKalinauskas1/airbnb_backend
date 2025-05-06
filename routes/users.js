@@ -132,11 +132,19 @@ router.get('/basic-info', authenticate, async (req, res) => {
  * @access  Public (with token)
  */
 router.post('/', async (req, res) => {
+  console.log('\n\n==== POST /api/users REQUEST RECEIVED ====');
+  console.log('Request body:', req.body);
+  console.log('Headers:', {
+    contentType: req.headers['content-type'],
+    authorization: req.headers.authorization ? 'Present (not shown)' : 'Not present'
+  });
+  
   const { email, full_name, is_seller, license, auth_user_id } = req.body;
   
-  console.log('Creating/updating user:', { email, full_name, is_seller, auth_user_id });
+  console.log('Parsed data:', { email, full_name, is_seller, license, auth_user_id });
   
   if (!email) {
+    console.log('ERROR: Email is required but was not provided');
     return res.status(400).json({ error: 'Email is required' });
   }
   
@@ -144,16 +152,26 @@ router.post('/', async (req, res) => {
     // First try to find by auth_user_id if provided
     let existing = null;
     if (auth_user_id) {
+      console.log('Looking for existing user by auth_user_id:', auth_user_id);
       existing = await prisma.public_users.findFirst({ 
         where: { auth_user_id }
       });
+      
+      if (existing) {
+        console.log('Found existing user by auth_user_id:', existing.user_id);
+      }
     }
     
     // If not found by auth_user_id, try by email
     if (!existing) {
+      console.log('Looking for existing user by email:', email);
       existing = await prisma.public_users.findUnique({ 
         where: { email }
       });
+      
+      if (existing) {
+        console.log('Found existing user by email:', existing.user_id);
+      }
     }
     
     // If user exists, update their information
@@ -171,6 +189,8 @@ router.post('/', async (req, res) => {
         }
       });
       
+      console.log('User updated successfully, ID:', updatedUser.user_id);
+      
       // Check if user is now an owner but wasn't before
       const wasOwner = existing.isowner === '1';
       const isNowOwner = is_seller === true;
@@ -178,11 +198,13 @@ router.post('/', async (req, res) => {
       // Create owner record if needed (user became an owner)
       if (isNowOwner && !wasOwner && license) {
         // Check if owner record already exists to avoid duplicates
+        console.log('User became an owner, checking if owner record exists');
         const ownerExists = await prisma.owner.findUnique({
           where: { owner_id: existing.user_id }
         });
         
         if (!ownerExists) {
+          console.log('Creating owner record for ID:', existing.user_id);
           await prisma.owner.create({
             data: {
               owner_id: existing.user_id,
@@ -190,6 +212,8 @@ router.post('/', async (req, res) => {
             }
           });
           console.log(`Created owner record for existing user: ${existing.user_id}, license: ${license || 'none'}`);
+        } else {
+          console.log('Owner record already exists, not creating duplicate');
         }
       }
       
@@ -201,6 +225,14 @@ router.post('/', async (req, res) => {
     }
 
     // Create new user if they don't exist
+    console.log('User not found, creating new user with email:', email);
+    console.log('Data for new user:', {
+      email,
+      full_name,
+      is_seller: is_seller === true ? 'true' : 'false',
+      auth_user_id
+    });
+    
     const newUser = await prisma.public_users.create({
       data: {
         email,
@@ -213,9 +245,12 @@ router.post('/', async (req, res) => {
         auth_user_id: auth_user_id // Store the Supabase user ID
       }
     });
+    
+    console.log('New user created successfully, ID:', newUser.user_id);
 
     // Create owner record if user is a seller
     if (is_seller === true) {
+      console.log('New user is an owner, creating owner record');
       await prisma.owner.create({
         data: {
           owner_id: newUser.user_id,
@@ -226,13 +261,21 @@ router.post('/', async (req, res) => {
       console.log(`Created owner record for new user: ${newUser.user_id}, license: ${license || 'none'}`);
     }
 
+    console.log('Registration completed successfully, sending response');
     res.status(201).json({ 
       message: 'User created', 
       user_id: newUser.user_id,
       is_owner: is_seller === true 
     });
   } catch (err) {
-    console.error('Error creating/updating user:', err);
+    console.error('==== ERROR creating/updating user ====');
+    console.error(err);
+    console.error('Error stack:', err.stack);
+    console.error('Error details:', {
+      code: err.code,
+      meta: err.meta,
+      message: err.message
+    });
     res.status(500).json({ error: 'Failed to create/update user', details: err.message });
   }
 });

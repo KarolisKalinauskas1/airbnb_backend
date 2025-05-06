@@ -13,11 +13,13 @@ const campingSpotsRoutes = require('./routes/campingSpots');
 const bookingRoutes = require('./routes/bookings');
 const reviewRoutes = require('./routes/reviews');
 const dashboardRoutes = require('./routes/dashboard');
+const chatbotRoutes = require('../routes/chatbot'); // Import chatbot routes from the correct location
 
 // Import middleware
 const { errorHandler } = require('./middleware/error');
 const routeAccessMiddleware = require('./middleware/route-access');
 const { authenticate } = require('./middleware/auth');
+const { optionalAuthenticate } = require('./middleware/auth'); // Import optionalAuthenticate middleware
 
 // Create Express app
 const app = express();
@@ -54,7 +56,20 @@ app.use(helmet({
 
 // CORS configuration
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: function(origin, callback) {
+    const allowedOrigins = [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      process.env.CORS_ORIGIN
+    ].filter(Boolean); // Remove undefined/null values
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -80,18 +95,20 @@ app.get('/api/ping', (req, res) => {
 // Database connection check middleware
 app.use(async (req, res, next) => {
   try {
-    // Ensure Prisma is connected
-    if (!prisma || !prisma.$connect) {
-      console.error('Prisma client not properly initialized');
-      return res.status(503).json({ error: 'Database service unavailable' });
-    }
+    // Import the connection helper
+    const { ensureConnection } = require('./config/prisma');
     
-    // Test the connection
-    await prisma.$queryRaw`SELECT 1`;
+    // Try to ensure connection before proceeding
+    await ensureConnection();
+    
+    // If we get here, the connection is established
     next();
   } catch (error) {
-    console.error('Database connection error:', error);
-    res.status(503).json({ error: 'Database service unavailable' });
+    console.error('Database connection error in middleware:', error);
+    res.status(503).json({ 
+      error: 'Database service unavailable', 
+      message: 'The server is experiencing database connectivity issues. Please try again later.'
+    });
   }
 });
 
@@ -112,6 +129,9 @@ app.use('/api/bookings', bookingRoutes);
 
 app.use('/api/reviews', authenticate, reviewRoutes);
 app.use('/api/dashboard', authenticate, dashboardRoutes);
+
+// Mount chatbot routes with optional authentication
+app.use('/api/chatbot', optionalAuthenticate, chatbotRoutes); // Use optional auth for chatbot
 
 // Error handling middleware
 app.use(errorHandler);
@@ -139,4 +159,4 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-module.exports = app; 
+module.exports = app;

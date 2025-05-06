@@ -77,6 +77,32 @@ router.post('/create-checkout-session', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Camping spot not found' });
     }
     
+    // Prevent owners from booking their own spots - Enhanced check with explicit logging
+    console.log('OWNERSHIP CHECK: Comparing user ID with camping spot owner ID');
+    console.log('- User ID (from token):', req.user.user_id);
+    console.log('- Spot Owner ID:', campingSpot.owner_id);
+    
+    const userIdNum = parseInt(req.user.user_id);
+    const ownerIdNum = parseInt(campingSpot.owner_id);
+    
+    if (userIdNum === ownerIdNum) {
+      console.log('BOOKING BLOCKED: User is the owner of this camping spot');
+      return res.status(403).json({
+        error: 'You cannot book your own camping spot',
+        details: 'Owners are not allowed to book their own camping spots.'
+      });
+    }
+    
+    // Also check the user ID from the request body as a backup
+    const requestUserIdNum = parseInt(user_id);
+    if (requestUserIdNum === ownerIdNum) {
+      console.log('BOOKING BLOCKED: Request user ID matches owner ID');
+      return res.status(403).json({
+        error: 'You cannot book your own camping spot',
+        details: 'Owners are not allowed to book their own camping spots.'
+      });
+    }
+    
     // Check for overlapping bookings
     if (campingSpot.bookings && campingSpot.bookings.length > 0) {
       return res.status(400).json({ 
@@ -169,6 +195,31 @@ router.get('/stripe-success', async (req, res) => {
     // Set proper content type for API response
     res.setHeader('Content-Type', 'application/json');
     
+    // ANTI-DUPLICATE CHECK 1: Check for existing bookings specifically linked to this session ID
+    // We'll add an additional query to see if a booking has already been processed for this exact session
+    const existingBookingsBySession = await prisma.transaction.findMany({
+      where: {
+        stripe_session_id: session_id
+      },
+      include: {
+        bookings: true
+      }
+    });
+
+    // If we found transactions for this session, return the existing booking data
+    if (existingBookingsBySession.length > 0 && existingBookingsBySession[0].bookings) {
+      console.log(`Found existing booking through session tracking for session: ${session_id}`);
+      const existingBooking = existingBookingsBySession[0].bookings;
+      return res.json({ 
+        already_processed: true,
+        booking_id: existingBooking.booking_id,
+        start_date: existingBooking.start_date,
+        end_date: existingBooking.end_date,
+        cost: existingBooking.cost,
+        status_id: existingBooking.status_id
+      });
+    }
+    
     // Retrieve the Stripe session to get metadata
     const session = await stripe.checkout.sessions.retrieve(session_id);
     console.log('Retrieved session data:', { 
@@ -186,7 +237,7 @@ router.get('/stripe-success', async (req, res) => {
       number_of_guests
     } = session.metadata;
       
-    // Look for existing bookings that match this session's data
+    // ANTI-DUPLICATE CHECK 2: Look for existing bookings that match this session's data
     const existingBookings = await prisma.bookings.findMany({
       where: {
         camper_id: parseInt(camper_id),
@@ -203,29 +254,37 @@ router.get('/stripe-success', async (req, res) => {
     if (existingBookings.length > 0) {
       booking = existingBookings[0];
       console.log(`Found existing booking ID: ${booking.booking_id} for session: ${session_id}`);
-    } else {
-      console.log(`Creating new booking for session ${session_id}`);
-        
-      // Get the actual camping spot price
-      const campingSpot = await prisma.camping_spot.findUnique({
-        where: { camping_spot_id: parseInt(camper_id) }
+      
+      // ANTI-DUPLICATE CHECK 3: Add session ID to transaction if it wasn't there before
+      // This helps with future lookups by session ID
+      await prisma.transaction.updateMany({
+        where: { booking_id: booking.booking_id },
+        data: { stripe_session_id: session_id }
       });
+    } else {
+      // Use a transaction to ensure database consistency between booking and transaction
+      booking = await prisma.$transaction(async (prismaClient) => {
+        console.log(`Creating new booking for session ${session_id}`);
         
-      if (!campingSpot) {
-        return res.status(404).json({ error: 'Camping spot not found' });
-      }
-        
-      // Calculate nights
-      const start = new Date(start_date);
-      const end = new Date(end_date);
-      const nightCount = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
-        
-      // Calculate base price
-      const actualBasePrice = campingSpot.price_per_night * nightCount;
-        
-      try {
+        // Get the actual camping spot price
+        const campingSpot = await prismaClient.camping_spot.findUnique({
+          where: { camping_spot_id: parseInt(camper_id) }
+        });
+          
+        if (!campingSpot) {
+          throw new Error('Camping spot not found');
+        }
+          
+        // Calculate nights
+        const start = new Date(start_date);
+        const end = new Date(end_date);
+        const nightCount = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+          
+        // Calculate base price
+        const actualBasePrice = campingSpot.price_per_night * nightCount;
+          
         // Create a new booking
-        booking = await prisma.bookings.create({
+        const newBooking = await prismaClient.bookings.create({
           data: {
             camper_id: parseInt(camper_id),
             user_id: parseInt(user_id),
@@ -238,20 +297,19 @@ router.get('/stripe-success', async (req, res) => {
           }
         });
           
-        // Create a transaction record
-        await prisma.transaction.create({
+        // Create a transaction record with the session ID for future reference
+        await prismaClient.transaction.create({
           data: {
             amount: parseFloat(session.amount_total / 100), // Convert from cents
             status_id: 2, // CONFIRMED
-            booking_id: booking.booking_id
+            booking_id: newBooking.booking_id,
+            stripe_session_id: session_id // Store the session ID for idempotency
           }
         });
           
-        console.log(`Created new booking ID ${booking.booking_id} for session ${session_id}`);
-      } catch (dbError) {
-        console.error('Database error creating booking:', dbError);
-        throw dbError;
-      }
+        console.log(`Created new booking ID ${newBooking.booking_id} for session ${session_id}`);
+        return newBooking;
+      });
     }
       
     // Return the booking ID for the frontend with more booking details

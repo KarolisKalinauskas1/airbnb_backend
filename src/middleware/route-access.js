@@ -3,9 +3,26 @@ const { authenticate } = require('./auth');
 // List of routes that should be public (no authentication required)
 const publicRoutes = [
   // Auth routes
+  '/auth/signin',
+  '/auth/login',
+  '/auth/signup',
+  '/auth/register',
+  '/auth/reset-password',
+  '/auth/refresh-token',
+  '/auth/status',
+  '/auth/session',
+  '/auth/restore-session',
+  '/auth/verify-token',
+  '/auth/sync-session',
+  '/auth/logout',
+  '/auth/signout',
+  
+  // Auth routes with api prefix
   '/api/auth/signin',
+  '/api/auth/signup',
   '/api/auth/login',
   '/api/auth/register',
+  '/api/auth/reset-password',
   '/api/auth/refresh-token',
   '/api/auth/status',
   '/api/auth/session',
@@ -13,6 +30,7 @@ const publicRoutes = [
   '/api/auth/verify-token',
   '/api/auth/sync-session',
   '/api/auth/logout',
+  '/api/auth/signout',
   
   // API info routes
   '/api',
@@ -48,11 +66,18 @@ const publicRoutes = [
   
   // Booking success route
   '/api/bookings/success',
-  '/bookings/success'
+  '/bookings/success',
+  
+  // Chatbot routes
+  '/api/chatbot/suggestions',
+  '/chatbot/suggestions',
+  '/api/chatbot/query',
+  '/chatbot/query'
 ];
 
 // List of public route patterns (for routes with parameters)
 const publicPatterns = [
+  /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|refresh\-token)(\?.*)?$/,  // Auth routes with parameters
   /^\/?(api\/)?camping-spots(\/)?(\?.*)?$/, // Allow all GETs to /camping-spots with or without /api prefix
   /^\/?(api\/)?camping-spots\/geocoding\/search(\?.*)?$/, // Allow geocoding search
   /^\/?(api\/)?geocoding\/search(\?.*)?$/, // Allow direct geocoding search
@@ -62,6 +87,8 @@ const publicPatterns = [
   /^\/?(api\/)?locations(\/)?$/, // Allow locations
   /^\/?(api\/)?countries(\/)?$/, // Allow countries
   /^\/?(api\/)?amenities(\/)?$/, // Allow amenities
+  /^\/?(api\/)?chatbot\/suggestions(\?.*)?$/, // Allow chatbot suggestions
+  /^\/?(api\/)?chatbot\/query(\?.*)?$/, // Allow chatbot query
 ];
 
 // List of owner-only routes
@@ -122,4 +149,4 @@ const routeAccessMiddleware = (req, res, next) => {
   return authenticate(req, res, next);
 };
 
-module.exports = routeAccessMiddleware; 
+module.exports = routeAccessMiddleware;

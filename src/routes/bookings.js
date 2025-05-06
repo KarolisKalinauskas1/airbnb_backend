@@ -395,7 +395,7 @@ router.post('/create-checkout-session', async (req, res) => {
         },
       ],
       mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/bookings/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/campers/${camper_id}`,
       metadata: {
         camper_id,
@@ -468,4 +468,4 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;
