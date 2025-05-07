@@ -129,11 +129,30 @@ router.get('/', async (req, res) => {
             images: true
           }
         },
-        status_booking_transaction: true
+        status_booking_transaction: true,
+        transaction: true // Include transaction data
       }
     });
 
-    res.json(bookings);
+    // Map the bookings to include transaction amount and service fee
+    const bookingsWithTransaction = bookings.map(booking => {
+      // Calculate service fee (10% of the booking cost)
+      const serviceFee = booking.cost * 0.1;
+      
+      return {
+        ...booking,
+        transactionAmount: booking.transaction?.amount || null,
+        serviceFee: parseFloat(serviceFee.toFixed(2)),
+        // For clarity, breakdown of costs
+        costBreakdown: {
+          baseCost: booking.cost,
+          serviceFee: parseFloat(serviceFee.toFixed(2)),
+          total: booking.transaction?.amount || (booking.cost + serviceFee)
+        }
+      };
+    });
+
+    res.json(bookingsWithTransaction);
   } catch (error) {
     console.error('Error fetching bookings:', error);
     res.status(500).json({ error: error.message });
