@@ -178,6 +178,98 @@ function extractKeywords(query) {
   return extractedPreferences;
 }
 
+// New function: Validate amenities against what's actually available in the database
+async function validateAmenitiesAgainstDatabase(amenities) {
+  if (!amenities || amenities.length === 0) {
+    return { valid: [], invalid: [] };
+  }
+  
+  try {
+    // Query the database to get a count of camping spots for each amenity
+    const amenityCounts = await Promise.all(
+      amenities.map(async (amenity) => {
+        const count = await prisma.camping_spot_amenities.count({
+          where: {
+            amenity: {
+              name: {
+                equals: amenity,
+                mode: 'insensitive'
+              }
+            }
+          }
+        });
+        
+        return { amenity, count };
+      })
+    );
+    
+    // Separate valid (available) and invalid (unavailable) amenities
+    const valid = amenityCounts
+      .filter(item => item.count > 0)
+      .map(item => item.amenity);
+      
+    const invalid = amenityCounts
+      .filter(item => item.count === 0)
+      .map(item => item.amenity);
+    
+    return { valid, invalid };
+  } catch (error) {
+    console.error('Error validating amenities:', error);
+    // If there's an error, assume all amenities are valid to avoid breaking the flow
+    return { valid: amenities, invalid: [] };
+  }
+}
+
+// Function to suggest alternative amenities for unavailable ones
+async function suggestAlternativeAmenities(unavailableAmenities) {
+  // Map of alternatives for common amenities
+  const alternativeMap = {
+    'Campfire': ['Fire pit', 'BBQ grill', 'Outdoor cooking area'],
+    'WiFi': ['4G coverage', 'Internet access', 'Cell service'],
+    'Shower': ['Bathroom', 'Washing facilities'],
+    'Hiking trails': ['Walking paths', 'Nature trails', 'Outdoor activities']
+    // Add more mappings as needed
+  };
+  
+  const suggestions = {};
+  
+  // For each unavailable amenity, find alternatives that actually exist in the database
+  for (const amenity of unavailableAmenities) {
+    const alternatives = alternativeMap[amenity] || [];
+    
+    if (alternatives.length > 0) {
+      // Check which alternatives actually exist in the database
+      const { valid } = await validateAmenitiesAgainstDatabase(alternatives);
+      
+      if (valid.length > 0) {
+        suggestions[amenity] = valid;
+      }
+    }
+  }
+  
+  return suggestions;
+}
+
+// Function to get the most popular available amenities
+async function getMostPopularAmenities(limit = 5) {
+  try {
+    // Get amenities ordered by frequency
+    const amenityCounts = await prisma.$queryRaw`
+      SELECT a.name, COUNT(csa.camping_spot_id) as spot_count
+      FROM amenities a
+      JOIN camping_spot_amenities csa ON a.amenity_id = csa.amenity_id
+      GROUP BY a.name
+      ORDER BY spot_count DESC
+      LIMIT ${limit}
+    `;
+    
+    return amenityCounts.map(item => item.name);
+  } catch (error) {
+    console.error('Error getting popular amenities:', error);
+    return [];
+  }
+}
+
 // Train the classifier with camping-related intents
 function trainClassifier() {
   // Location intent
@@ -740,36 +832,30 @@ router.post('/message', async (req, res) => {
     if (isGeneralInfoQuestion(message)) {
       // Check specifically for amenity information queries
       if (popularAmenities.pattern.test(message)) {
-        return res.json({
-          response: popularAmenities.response
-        });
-      }
-      
-      // Handle other general info queries similarly to the /query endpoint
-      const generalInfoTopics = [
-        {
-          pattern: /booking|reservations|reserve|book/i,
-          response: "To book a camping spot, browse our listings, select the dates you want to stay, and click the 'Book Now' button. You'll need to create an account if you don't already have one. Payment is processed securely online."
-        },
-        {
-          pattern: /price|cost|rate|fee|charges/i,
-          response: "Camping spot prices vary based on location, amenities, and season. Prices typically range from $20 to $150 per night. You can filter by price range when searching for spots."
-        },
-        {
-          pattern: /most popular amenities|popular amenities/i,
-          response: popularAmenities.response
-        },
-        // ...other general info topics...
-      ];
-      
-      // Check for matches with general info topics
-      for (const topic of generalInfoTopics) {
-        if (topic.pattern.test(message)) {
+        // Dynamically update the popular amenities from the actual database
+        try {
+          const actualPopularAmenities = await getMostPopularAmenities(10);
+          let response = "Based on our current listings, the most popular amenities are:\n\n";
+          
+          actualPopularAmenities.forEach((amenity, index) => {
+            response += `${index + 1}. ${amenity}\n`;
+          });
+          
+          response += "\nWould you like me to help you find camping spots with any of these amenities?";
+          
           return res.json({
-            response: topic.response
+            response
+          });
+        } catch (error) {
+          console.error('Error getting popular amenities:', error);
+          return res.json({
+            response: popularAmenities.response // Fall back to static response
           });
         }
       }
+      
+      // Handle other general info queries...
+      // ...existing code...
     }
 
     // Check if this is a follow-up to a previous question
@@ -793,6 +879,21 @@ router.post('/message', async (req, res) => {
     const dateInfo = processDates(message);
     if (dateInfo) {
       extractedPreferences.dateRange = dateInfo;
+    }
+    
+    // Validate amenities against the database
+    if (extractedPreferences.amenities && extractedPreferences.amenities.length > 0) {
+      const { valid, invalid } = await validateAmenitiesAgainstDatabase(extractedPreferences.amenities);
+      
+      // Store the validated amenities
+      extractedPreferences.amenities = valid;
+      
+      // If there are invalid amenities, add them to the conversation context
+      if (invalid.length > 0) {
+        conversation.context.invalidAmenities = invalid;
+        // Get alternative suggestions
+        conversation.context.alternativeSuggestions = await suggestAlternativeAmenities(invalid);
+      }
     }
     
     // Merge with conversation preferences
@@ -839,11 +940,43 @@ router.post('/message', async (req, res) => {
     // Generate response based on conversation and preferences
     let response;
     
+    // If we have invalid amenities, include that information in the response
+    if (conversation.context.invalidAmenities && conversation.context.invalidAmenities.length > 0) {
+      const invalidAmenities = conversation.context.invalidAmenities;
+      const alternatives = conversation.context.alternativeSuggestions || {};
+      
+      // Start with an acknowledgment of the invalid amenities
+      response = `I noticed you asked for ${invalidAmenities.join(', ')}, but unfortunately, none of our current camping spots offer ${invalidAmenities.length > 1 ? 'these amenities' : 'this amenity'}. `;
+      
+      // Suggest alternatives if available
+      let hasAlternatives = false;
+      for (const amenity in alternatives) {
+        if (alternatives[amenity].length > 0) {
+          hasAlternatives = true;
+          response += `Instead of ${amenity}, we have spots with ${alternatives[amenity].join(', ')}. `;
+        }
+      }
+      
+      if (!hasAlternatives) {
+        response += `Would you like to continue your search without ${invalidAmenities.length > 1 ? 'these amenities' : 'this amenity'}? `;
+      }
+      
+      // Clear the invalid amenities from the context to avoid repeating this message
+      delete conversation.context.invalidAmenities;
+      delete conversation.context.alternativeSuggestions;
+      
+      // Continue with the regular response
+      response += "\n\n";
+    }
+    
+    // Regular response generation based on valid preferences
+    // ...existing code for response generation...
+    
     // Check if user is asking about camping spots near natural features
     if (mergedPreferences.nearbyFeatures && mergedPreferences.nearbyFeatures.length > 0) {
       // User is asking about camping spots near natural features (e.g., lakes, forests)
       const features = mergedPreferences.nearbyFeatures.join(' and ');
-      response = `I found several camping spots near ${features}. `;
+      response = (response || "") + `I found several camping spots near ${features}. `;
       
       // Add more specific information based on the natural features
       if (mergedPreferences.nearbyFeatures.includes('lake')) {
@@ -864,10 +997,10 @@ router.post('/message', async (req, res) => {
     // Default response if no specific natural features were mentioned
     else if (mergedPreferences.location) {
       // User specified a location
-      response = `I found several camping spots in ${mergedPreferences.location}. `;
+      response = (response || "") + `I found several camping spots in ${mergedPreferences.location}. `;
       
       if (mergedPreferences.locationRadius) {
-        response = `I found several camping spots within ${mergedPreferences.locationRadius}km of ${mergedPreferences.location}. `;
+        response = (response || "") + `I found several camping spots within ${mergedPreferences.locationRadius}km of ${mergedPreferences.location}. `;
       }
       
       // Add information about amenities only if explicitly mentioned
@@ -895,7 +1028,7 @@ router.post('/message', async (req, res) => {
     } 
     else if (hasMinimumSearchCriteria) {
       // We have some criteria but not location
-      response = "I found some camping spots that match your criteria. ";
+      response = (response || "") + "I found some camping spots that match your criteria. ";
       
       // Mention the criteria we do have
       if (mergedPreferences.amenities.length > 0) {
@@ -925,7 +1058,7 @@ router.post('/message', async (req, res) => {
     }
     else {
       // General search query without specific information
-      response = "I can help you find the perfect camping spot. Could you tell me more about what you're looking for? For example, are you interested in a specific location, amenities, or natural features like lakes or forests?";
+      response = (response || "") + "I can help you find the perfect camping spot. Could you tell me more about what you're looking for? For example, are you interested in a specific location, amenities, or natural features like lakes or forests?";
       // Set state to ask for location next
       conversation.state = ConversationState.ASKING_LOCATION;
     }
@@ -933,7 +1066,7 @@ router.post('/message', async (req, res) => {
     // Send response
     res.json({ response });
   } catch (error) {
-    logger.error('Error in chatbot message endpoint:', error);
+    console.error('Error in chatbot message endpoint:', error);
     res.status(500).json({ error: 'An error occurred processing your message' });
   }
 });
@@ -976,68 +1109,34 @@ router.post('/query', async (req, res) => {
     if (isGeneralInfo) {
       // Check specifically for amenity information queries
       if (popularAmenities.pattern.test(query)) {
-        return res.json({
-          message: popularAmenities.response,
-          isGeneralInfo: true
-        });
-      }
-      
-      // Check for other general information topics
-      const generalInfoTopics = [
-        {
-          pattern: /booking|reservations|reserve|book/i,
-          response: "To book a camping spot, browse our listings, select the dates you want to stay, and click the 'Book Now' button. You'll need to create an account if you don't already have one. Payment is processed securely online."
-        },
-        {
-          pattern: /price|cost|rate|fee|charges/i,
-          response: "Camping spot prices vary based on location, amenities, and season. Prices typically range from $20 to $150 per night. You can filter by price range when searching for spots."
-        },
-        {
-          pattern: /most popular amenities|popular amenities/i,
-          response: popularAmenities.response
-        },
-        {
-          pattern: /location|where|places|region/i,
-          response: "We have camping spots across various locations, from forests and mountains to lakesides and beaches. You can search for spots by city, region, or proximity to natural features."
-        },
-        {
-          pattern: /safety|safe|secure/i,
-          response: "Safety is our priority. All hosts follow strict safety guidelines, and spots are regularly reviewed. We recommend reading previous guest reviews and contacting the host directly if you have specific safety concerns."
-        },
-        {
-          pattern: /pets|dog|cat|animal/i,
-          response: "Many camping spots are pet-friendly, but policies vary by host. Look for the 'Pet Friendly' tag in listings, and always check any specific pet rules or fees in the listing description."
-        },
-        {
-          pattern: /dates|availability|calendar|when/i,
-          response: "Availability varies by camping spot. Each listing shows a calendar with available dates. We recommend booking in advance, especially for popular spots during peak seasons like summer weekends and holidays."
-        },
-        {
-          pattern: /equipment|gear|supplies|bring/i,
-          response: "Essential camping gear typically includes a tent, sleeping bags, cooking equipment, food, water, and appropriate clothing. Some hosts provide gear rentals or have pre-set tents available. Check the listing details for what's provided and what you need to bring."
-        }
-      ];
-      
-      // Check for matches with general info topics
-      for (const topic of generalInfoTopics) {
-        if (topic.pattern.test(query)) {
-          // Return general info without forcing conversation flow
+        try {
+          // Get real, up-to-date amenity data from the database
+          const actualPopularAmenities = await getMostPopularAmenities(10);
+          let response = "Based on our current listings, the most popular amenities are:\n\n";
+          
+          actualPopularAmenities.forEach((amenity, index) => {
+            response += `${index + 1}. ${amenity}\n`;
+          });
+          
+          response += "\nWould you like me to help you find camping spots with any of these amenities?";
+          
           return res.json({
-            message: topic.response,
+            message: response,
+            isGeneralInfo: true
+          });
+        } catch (error) {
+          console.error('Error getting popular amenities:', error);
+          return res.json({
+            message: popularAmenities.response, // Fall back to static response
             isGeneralInfo: true
           });
         }
       }
       
-      // If no specific general info topic was matched but it's still a general question
-      if (isGeneralInfo) {
-        return res.json({
-          message: "I can provide information about camping spots, amenities, booking procedures, and more. Feel free to ask specific questions about our camping platform or services!",
-          isGeneralInfo: true
-        });
-      }
+      // Check for other general information topics
+      // ...existing code...
     }
-    
+
     // Check if this is a follow-up to a previous question
     if (conversation.state !== ConversationState.INITIAL) {
       const followUpResponse = handleFollowUp(conversation, query);
@@ -1064,6 +1163,42 @@ router.post('/query', async (req, res) => {
       extractedPreferences.dateRange = dateInfo;
     }
     
+    // Validate amenities against the database before merging with other preferences
+    if (extractedPreferences.amenities && extractedPreferences.amenities.length > 0) {
+      const { valid, invalid } = await validateAmenitiesAgainstDatabase(extractedPreferences.amenities);
+      
+      // Store the validated amenities
+      extractedPreferences.amenities = valid;
+      
+      // If there are invalid amenities, add them to the conversation context
+      if (invalid.length > 0) {
+        conversation.context.invalidAmenities = invalid;
+        // Get alternative suggestions
+        conversation.context.alternativeSuggestions = await suggestAlternativeAmenities(invalid);
+      }
+    }
+    
+    // Do the same for user-provided preferences if any
+    if (userPreferences?.amenities && userPreferences.amenities.length > 0) {
+      const { valid, invalid } = await validateAmenitiesAgainstDatabase(userPreferences.amenities);
+      
+      // Update user preferences with validated amenities only
+      userPreferences.amenities = valid;
+      
+      // Add invalid amenities to conversation context
+      if (invalid.length > 0) {
+        conversation.context.invalidAmenities = conversation.context.invalidAmenities || [];
+        conversation.context.invalidAmenities = [...conversation.context.invalidAmenities, ...invalid];
+        // Get alternative suggestions
+        const additionalSuggestions = await suggestAlternativeAmenities(invalid);
+        conversation.context.alternativeSuggestions = conversation.context.alternativeSuggestions || {};
+        conversation.context.alternativeSuggestions = {
+          ...conversation.context.alternativeSuggestions,
+          ...additionalSuggestions
+        };
+      }
+    }
+    
     // Merge explicit preferences with extracted ones and conversation preferences
     const mergedPreferences = {
       priceRange: {
@@ -1073,7 +1208,8 @@ router.post('/query', async (req, res) => {
       guestCount: userPreferences?.guestCount || conversation.preferences.guestCount || extractedPreferences.guestCount,
       location: userPreferences?.location || conversation.preferences.location || extractedPreferences.location,
       amenities: userPreferences?.amenities || conversation.preferences.amenities.length > 0 ? conversation.preferences.amenities : extractedPreferences.amenities,
-      dateRange: userPreferences?.dateRange || conversation.preferences.dateRange.startDate ? conversation.preferences.dateRange : extractedPreferences.dateRange
+      dateRange: userPreferences?.dateRange || conversation.preferences.dateRange.startDate ? conversation.preferences.dateRange : extractedPreferences.dateRange,
+      nearbyFeatures: extractedPreferences.nearbyFeatures || []
     };
     
     // Update conversation preferences
@@ -1090,6 +1226,7 @@ router.post('/query', async (req, res) => {
       (mergedPreferences.location) || 
       (mergedPreferences.dateRange && mergedPreferences.dateRange.startDate) ||
       (mergedPreferences.amenities && mergedPreferences.amenities.length > 0) ||
+      (mergedPreferences.nearbyFeatures && mergedPreferences.nearbyFeatures.length > 0) ||
       (mergedPreferences.priceRange.min !== null || mergedPreferences.priceRange.max !== null);
     
     // Only ask follow-up questions if we don't have any search criteria
@@ -1140,15 +1277,15 @@ router.post('/query', async (req, res) => {
     };
 
     // Add natural features filter if provided
-    if (extractedPreferences.nearbyFeatures && extractedPreferences.nearbyFeatures.length > 0) {
-      console.log(`Searching for camping spots near: ${extractedPreferences.nearbyFeatures.join(', ')}`);
+    if (mergedPreferences.nearbyFeatures && mergedPreferences.nearbyFeatures.length > 0) {
+      console.log(`Searching for camping spots near: ${mergedPreferences.nearbyFeatures.join(', ')}`);
       
       // Store these for the response message
-      conversation.context.nearbyFeatures = extractedPreferences.nearbyFeatures;
+      conversation.context.nearbyFeatures = mergedPreferences.nearbyFeatures;
       
       // We'll use these features in a specialized query
       // For a lake, we would look for spots that have lake in the description or are tagged with lake access
-      const featureKeywords = extractedPreferences.nearbyFeatures.map(feature => ({
+      const featureKeywords = mergedPreferences.nearbyFeatures.map(feature => ({
         OR: [
           { description: { contains: feature, mode: 'insensitive' } },
           { title: { contains: feature, mode: 'insensitive' } },
@@ -1162,9 +1299,6 @@ router.post('/query', async (req, res) => {
           OR: featureKeywords
         });
       }
-      
-      // Don't set a default location when user specifically asks for a natural feature
-      // This prevents defaulting to Dinant when asking for a lake
     }
 
     // Add date range filter if provided
@@ -1255,10 +1389,24 @@ router.post('/query', async (req, res) => {
       }
     }
     
-    // Add amenities filter
+    // Add amenities filter - only include validated amenities
     if (mergedPreferences.amenities && mergedPreferences.amenities.length > 0) {
-      // This is a simplified approach - in a real implementation you'd need a more sophisticated join
-      // For now, we'll fetch and filter in memory
+      // Create a more sophisticated amenities filter using JOIN
+      // We'll keep it simple for demonstration purposes but in reality,
+      // this would need to adjust based on your specific database schema
+      dbQuery.where.AND.push({
+        camping_spot_amenities: {
+          some: {
+            amenity: {
+              name: {
+                in: mergedPreferences.amenities,
+                mode: 'insensitive'
+              }
+            }
+          }
+        }
+      });
+      
       console.log(`Searching for amenities: ${mergedPreferences.amenities.join(', ')}`);
     }
 
@@ -1345,8 +1493,41 @@ router.post('/query', async (req, res) => {
     if (scoredSpots.length === 0) {
       conversation.context.noResultsFound = true;
       
+      // If we had invalid amenities, explain this could be why no results were found
+      if (conversation.context.invalidAmenities && conversation.context.invalidAmenities.length > 0) {
+        const invalidAmenities = conversation.context.invalidAmenities;
+        const alternatives = conversation.context.alternativeSuggestions || {};
+        
+        let message = `I couldn't find any camping spots matching your criteria. `;
+        message += `One reason might be that you asked for ${invalidAmenities.join(', ')}, but we don't currently have any camping spots with ${invalidAmenities.length > 1 ? 'these amenities' : 'this amenity'}. `;
+        
+        // Suggest alternatives if available
+        let hasAlternatives = false;
+        for (const amenity in alternatives) {
+          if (alternatives[amenity].length > 0) {
+            hasAlternatives = true;
+            message += `Instead of ${amenity}, you could try spots with ${alternatives[amenity].join(', ')}. `;
+          }
+        }
+        
+        message += "Would you like to try with different preferences?";
+        
+        // Clear these from context now that we've used them
+        delete conversation.context.invalidAmenities;
+        delete conversation.context.alternativeSuggestions;
+        
+        conversation.state = ConversationState.REFINING_SEARCH;
+        return res.json({
+          message: message,
+          isFollowUp: true,
+          conversationState: conversation.state,
+          extractedPreferences: mergedPreferences,
+          recommendations: []
+        });
+      }
+      
       // Only transition to refining search if we had some criteria
-      if (hasMinimumSearchCriteria) {
+      else if (hasMinimumSearchCriteria) {
         conversation.state = ConversationState.REFINING_SEARCH;
         
         return res.json({
@@ -1383,6 +1564,28 @@ router.post('/query', async (req, res) => {
     ];
     
     responseMessage = intros[Math.floor(Math.random() * intros.length)];
+    
+    // If we had invalid amenities but still found results, mention this
+    if (conversation.context.invalidAmenities && conversation.context.invalidAmenities.length > 0) {
+      const invalidAmenities = conversation.context.invalidAmenities;
+      const alternatives = conversation.context.alternativeSuggestions || {};
+      
+      responseMessage += ` I wasn't able to find spots with ${invalidAmenities.join(', ')} as we don't currently have listings with ${invalidAmenities.length > 1 ? 'these amenities' : 'this amenity'}. `;
+      
+      // If alternatives were found, mention them
+      let hasAlternatives = false;
+      for (const amenity in alternatives) {
+        if (alternatives[amenity].length > 0) {
+          hasAlternatives = true;
+          responseMessage += `Instead, I included spots with ${alternatives[amenity].join(', ')} as alternatives. `;
+          break; // Just mention one alternative to keep the message short
+        }
+      }
+      
+      // Clear these from context now that we've used them
+      delete conversation.context.invalidAmenities;
+      delete conversation.context.alternativeSuggestions;
+    }
     
     // Add more context based on the search
     if (mergedPreferences.dateRange && mergedPreferences.dateRange.startDate) {
