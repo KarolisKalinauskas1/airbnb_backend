@@ -1,9 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate } = require('../modules/auth/middleware/auth.middleware');
 const { prisma } = require('../config');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const EmailService = require('../shared/services/email.service');
 
 // Public success route
 router.get('/success', async (req, res) => {
@@ -74,26 +73,6 @@ router.get('/success', async (req, res) => {
         status_booking_transaction: { connect: { status_id: 2 } }
       }
     });
-
-    // After creating the booking and transaction
-    try {
-      const bookingDetails = {
-        location: booking.camping_spot.title,
-        dates: `${booking.start_date.toLocaleDateString()} to ${booking.end_date.toLocaleDateString()}`,
-        total: `$${booking.cost}`
-      };
-      
-      await EmailService.sendBookingConfirmation(
-        booking.users.email,
-        booking.users.full_name,
-        bookingDetails
-      );
-      
-      console.log(`Sent confirmation email for booking ${booking.booking_id}`);
-    } catch (emailError) {
-      console.error('Failed to send booking confirmation email:', emailError);
-      // Don't fail the booking if email fails
-    }
 
     res.json({
       success: true,

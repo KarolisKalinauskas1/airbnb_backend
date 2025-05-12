@@ -6,8 +6,6 @@ const http = require('http');
 const debug = require('debug')('airbnb-backend:server');
 const app = require('./app');
 const { PrismaClient } = require('@prisma/client');
-const cron = require('node-cron');
-const BookingCompletionService = require('./shared/services/booking-completion.service');
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -107,12 +105,6 @@ function onListening() {
   console.log(`Server is running on port ${addr.port}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 }
-
-// Schedule the booking completion check to run daily at midnight
-cron.schedule('0 0 * * *', async () => {
-  console.log('Running daily booking completion check...');
-  await BookingCompletionService.checkCompletedBookings();
-});
 
 // Start server
 server.listen(port);

@@ -3,8 +3,8 @@ const router = express.Router();
 const multer = require('multer');
 const cloudinary = require('../utils/cloudinary');
 const { prisma } = require('../config');
-const { ValidationError, NotFoundError, ForbiddenError } = require('../middleware/error');
-const { authenticate } = require('../middleware/auth');
+const { ValidationError, NotFoundError, ForbiddenError } = require('../shared/middleware/error.middleware');
+const { authenticate } = require('../modules/auth/middleware/auth.middleware');
 const { geocodeAddress } = require('../../utils/geocoding');
 const axios = require('axios');
 
@@ -748,9 +748,6 @@ router.get('/:id/availability', async (req, res) => {
     const bookings = await prisma.bookings.findMany({
       where: {
         camper_id: spotId,
-        status_id: {
-          in: [1, 2, 5] // Only include Pending (1), Confirmed (2), and Blocked (5) statuses
-        },
         OR: [
           {
             start_date: {
