@@ -216,13 +216,11 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create a new camping spot
-router.post('/', upload.array('images'), async (req, res) => {
+// Create a new camping spot - requires authentication
+router.post('/', authenticate, upload.array('images'), async (req, res) => {
   try {
-    // Check if user is authenticated (handled by middleware)
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
+    // User must be authenticated (now handled by middleware)
+    // If we get here, req.user should be set
 
     // Parse the location data if it's a string
     let location;

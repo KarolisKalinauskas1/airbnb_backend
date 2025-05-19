@@ -33,18 +33,22 @@ const publicRoutes = [
   '/api/auth/sync-session',
   '/api/auth/logout',
   '/api/auth/signout',
-  
-  // API info routes
+    // API info routes
   '/api',
   '/api/ping',
   '/api/docs',
   '/api/docs/json',
   '/api/status',
   '/api/health',
+    // OAuth routes
+  '/api/auth/oauth/google/login',
+  '/api/auth/oauth/google/callback',
+  '/auth/oauth/google/login',
+  '/auth/oauth/google/callback',
+  '/api/auth/oauth/google/supabase-callback', // Supabase callback handler
   
-  // Public data routes
-  '/api/camping-spots',
-  '/camping-spots',
+    // Public data routes - only for GET requests (POST requires auth)
+  // Routes for specific camping spots features that are public
   '/api/camping-spots/search',
   '/camping-spots/search',
   '/api/camping-spots/featured',
@@ -71,14 +75,17 @@ const publicRoutes = [
 ];
 
 // List of public route patterns (for routes with parameters)
-const publicPatterns = [
+const publicPatterns = [  
   /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|update\-password|refresh\-token)(\?.*)?$/,  // Auth routes with parameters
-  /^\/?(api\/)?camping-spots(\/)?(\?.*)?$/, // Allow all GETs to /camping-spots with or without /api prefix
+  /^\/?(api\/)?auth\/oauth\/google\/(login|callback|supabase-callback)(\?.*)?$/, // OAuth Google routes with parameters
+  /^\/social-auth-success(\?.*)?$/, // Social auth success page with any query parameters
+  // Note: We now handle camping-spots separately based on HTTP method below
   /^\/?(api\/)?camping-spots\/geocoding\/search(\?.*)?$/, // Allow geocoding search
   /^\/?(api\/)?geocoding\/search(\?.*)?$/, // Allow direct geocoding search
   /^\/?(api\/)?camping-spots\/search(\?.*)?$/, // Allow search
   /^\/?(api\/)?camping-spots\/featured(\/)?$/, // Allow featured spots
-  /^\/?(api\/)?camping-spots\/nearby(\/)?(\?.*)?$/, // Allow nearby spots  /^\/?(api\/)?locations(\/)?$/, // Allow locations
+  /^\/?(api\/)?camping-spots\/nearby(\/)?(\?.*)?$/, // Allow nearby spots  
+  /^\/?(api\/)?locations(\/)?$/, // Allow locations
   /^\/?(api\/)?countries(\/)?$/, // Allow countries
   /^\/?(api\/)?amenities(\/)?$/ // Allow amenities
 ];
@@ -125,11 +132,15 @@ const routeAccessMiddleware = (req, res, next) => {
     });
     return next();
   }
-
-  // For camping spots routes, only require auth for POST/PUT/DELETE
-  if ((path.startsWith('/api/camping-spots') || path.startsWith('/camping-spots')) && method === 'GET') {
-    console.log('Allowing GET request to camping spots');
-    return next();
+  // For camping spots routes, only allow GET without auth, require auth for POST/PUT/DELETE
+  if ((path.startsWith('/api/camping-spots') || path.startsWith('/camping-spots'))) {
+    if (method === 'GET') {
+      console.log('Allowing GET request to camping spots');
+      return next();
+    } else {
+      console.log('Requiring auth for non-GET camping spots request:', method, path);
+      return authenticate(req, res, next);
+    }
   }
 
   // For all other routes, require authentication
