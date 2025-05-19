@@ -14,13 +14,18 @@ router.get('/user', authenticate, async (req, res) => {
       return res.status(401).json({ error: 'Authentication required' });
     }
     
+    // Get basic bookings with more explicit selection
     const bookings = await prisma.bookings.findMany({
       where: { 
         user_id: req.user.user_id
       },
       include: {
         camping_spot: {
-          include: {
+          select: {
+            camping_spot_id: true,
+            title: true,
+            description: true,
+            price_per_night: true,
             location: true,
             images: true
           }
@@ -37,14 +42,25 @@ router.get('/user', authenticate, async (req, res) => {
       orderBy: {
         created_at: 'desc'
       }
-    });
-
-    // Format the data for the frontend
+    });    // Format the data for the frontend
     const formattedBookings = bookings.map(booking => {
       const baseCost = parseFloat(booking.cost || 0);
       const serviceFee = parseFloat((baseCost * 0.1).toFixed(2));
       const totalCost = parseFloat((baseCost + serviceFee).toFixed(2));
       
+      // Extract camping spot data safely
+      const campingSpot = booking.camping_spot || {};
+      const spotTitle = campingSpot.title || 'Unnamed Camping Spot';
+        // Log for debugging
+      console.log(`Booking ${booking.booking_id} has spot title: "${spotTitle}"`);
+      
+      // Extra debugging for specific booking IDs
+      if (booking.booking_id === 21) {
+        console.log('SPECIAL DEBUG - Booking 21:');
+        console.log('  camping_spot_id:', campingSpot.camping_spot_id);
+        console.log('  title:', spotTitle);
+        console.log('  raw camping_spot:', JSON.stringify(campingSpot));
+      }
       return {
         id: booking.booking_id,
         start_date: booking.start_date,
@@ -56,19 +72,31 @@ router.get('/user', authenticate, async (req, res) => {
         baseCost: baseCost,
         serviceFee: serviceFee,
         totalCost: totalCost,
-        has_review: !!booking.review,
-        spot: {
-          id: booking.camping_spot?.camping_spot_id,
-          name: booking.camping_spot?.name,
-          description: booking.camping_spot?.description,
-          price_per_night: booking.camping_spot?.price_per_night,
-          location: booking.camping_spot?.location,
-          images: booking.camping_spot?.images || []
+        has_review: !!booking.review,        spot: {
+          id: campingSpot.camping_spot_id,
+          name: spotTitle, // Use the title as name
+          title: spotTitle, // Explicitly include title field
+          description: campingSpot.description || '',
+          price_per_night: campingSpot.price_per_night || 0,
+          location: campingSpot.location || {},
+          images: campingSpot.images || []
         }
       };
     });
+      console.log(`Found ${formattedBookings.length} bookings for user ${req.user.user_id}`);
     
-    console.log(`Found ${formattedBookings.length} bookings for user ${req.user.user_id}`);
+    // Debug what we're sending
+    if (formattedBookings.length > 0) {
+      console.log('First formatted booking spot data:', JSON.stringify({
+        id: formattedBookings[0].id,
+        spot: {
+          id: formattedBookings[0].spot?.id,
+          name: formattedBookings[0].spot?.name,
+          title: formattedBookings[0].spot?.title
+        }
+      }, null, 2));
+    }
+    
     res.json(formattedBookings);
   } catch (error) {
     console.error('Error fetching user bookings:', error);
