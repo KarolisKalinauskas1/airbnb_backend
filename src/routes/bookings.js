@@ -1,9 +1,80 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const { prisma } = require('../config');
+const prisma = require('../config/prisma');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const EmailService = require('../shared/services/email.service');
+
+// Get bookings for the currently logged in user
+router.get('/user', authenticate, async (req, res) => {
+  try {
+    console.log('Getting bookings for user:', req.user?.user_id);
+    
+    if (!req.user || !req.user.user_id) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    const bookings = await prisma.bookings.findMany({
+      where: { 
+        user_id: req.user.user_id
+      },
+      include: {
+        camping_spot: {
+          include: {
+            location: true,
+            images: true
+          }
+        },
+        status_booking_transaction: true,
+        review: {
+          select: {
+            review_id: true,
+            rating: true,
+            comment: true
+          }
+        }
+      },
+      orderBy: {
+        created_at: 'desc'
+      }
+    });
+
+    // Format the data for the frontend
+    const formattedBookings = bookings.map(booking => {
+      const baseCost = parseFloat(booking.cost || 0);
+      const serviceFee = parseFloat((baseCost * 0.1).toFixed(2));
+      const totalCost = parseFloat((baseCost + serviceFee).toFixed(2));
+      
+      return {
+        id: booking.booking_id,
+        start_date: booking.start_date,
+        end_date: booking.end_date,
+        number_of_guests: booking.number_of_guests,
+        status: booking.status_booking_transaction?.status || 'Pending',
+        status_id: booking.status_id,
+        created_at: booking.created_at,
+        baseCost: baseCost,
+        serviceFee: serviceFee,
+        totalCost: totalCost,
+        has_review: !!booking.review,
+        spot: {
+          id: booking.camping_spot?.camping_spot_id,
+          name: booking.camping_spot?.name,
+          description: booking.camping_spot?.description,
+          price_per_night: booking.camping_spot?.price_per_night,
+          location: booking.camping_spot?.location,
+          images: booking.camping_spot?.images || []
+        }
+      };
+    });
+    
+    console.log(`Found ${formattedBookings.length} bookings for user ${req.user.user_id}`);
+    res.json(formattedBookings);
+  } catch (error) {
+    console.error('Error fetching user bookings:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Public success route
 router.get('/success', async (req, res) => {
@@ -73,23 +144,30 @@ router.get('/success', async (req, res) => {
         bookings: { connect: { booking_id: booking.booking_id } },
         status_booking_transaction: { connect: { status_id: 2 } }
       }
-    });
-
-    // After creating the booking and transaction
+    });    // After creating the booking and transaction
     try {
-      const bookingDetails = {
-        location: booking.camping_spot.title,
-        dates: `${booking.start_date.toLocaleDateString()} to ${booking.end_date.toLocaleDateString()}`,
-        total: `$${booking.cost}`
-      };
+      // Get the full user record for the email
+      const user = await prisma.public_users.findUnique({
+        where: { user_id: parseInt(user_id) }
+      });
       
-      await EmailService.sendBookingConfirmation(
-        booking.users.email,
-        booking.users.full_name,
-        bookingDetails
-      );
-      
-      console.log(`Sent confirmation email for booking ${booking.booking_id}`);
+      if (user) {
+        // Import the SimpleGmailService
+        const SimpleGmailService = require('../../src/shared/services/simple-gmail.service');
+          // Send payment success email with SimpleGmailService (newer implementation)
+        await SimpleGmailService.sendPaymentSuccessEmail(
+          booking, 
+          user, 
+          booking.camping_spot,
+          parseFloat(total)
+        );
+        
+        // No need to update database field since payment_email_sent was removed from schema
+        
+        console.log(`Sent payment confirmation email for booking ${booking.booking_id} to ${user.email}`);
+      } else {
+        console.warn(`User not found for booking confirmation email: ${user_id}`);
+      }
     } catch (emailError) {
       console.error('Failed to send booking confirmation email:', emailError);
       // Don't fail the booking if email fails
@@ -151,7 +229,8 @@ router.get('/', async (req, res) => {
           }
         },
         status_booking_transaction: true,
-        transaction: true // Include transaction data
+        transaction: true, // Include transaction data
+        review: true // Include review data to show if booking has been reviewed
       }
     });
 
@@ -372,9 +451,7 @@ router.delete('/:id', async (req, res) => {
 
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
-    }
-
-    // Only allow the booking owner to cancel
+    }    // Only allow the booking owner to cancel
     if (booking.userId !== user.id) {
       return res.status(403).json({ error: 'Not authorized to cancel this booking' });
     }
@@ -382,10 +459,81 @@ router.delete('/:id', async (req, res) => {
     await prisma.booking.delete({
       where: { id: parseInt(req.params.id) }
     });
+    
+    // Send cancellation email
+    try {
+      // Get the full user record for the email
+      const fullUser = await prisma.public_users.findUnique({
+        where: { user_id: user.id }
+      });
+      
+      if (fullUser) {
+        await EmailService.sendBookingCancellation(booking, fullUser);
+        console.log(`Sent cancellation email for booking ${booking.id} to ${fullUser.email}`);
+      } else {
+        console.warn(`User not found for booking cancellation email: ${user.id}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send booking cancellation email:', emailError);
+      // Don't fail the cancellation if email fails
+    }
 
     res.json({ message: 'Booking cancelled successfully' });
   } catch (error) {
     res.status(400).json({ error: error.message });
+  }
+});
+
+// Cancel a booking
+router.patch('/:id/cancel', authenticate, async (req, res) => {
+  try {
+    const bookingId = parseInt(req.params.id);
+
+    // Check if booking exists
+    const booking = await prisma.bookings.findUnique({
+      where: { 
+        booking_id: bookingId 
+      },
+      include: {
+        camping_spot: true,
+        users: true
+      }
+    });
+
+    if (!booking) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+
+    // Verify the user is the owner of the booking
+    if (booking.user_id !== req.user.user_id) {
+      return res.status(403).json({ error: 'You are not authorized to cancel this booking' });
+    }
+
+    // Update the booking status to cancelled (status_id 3 = Cancelled)
+    const updatedBooking = await prisma.bookings.update({
+      where: { booking_id: bookingId },
+      data: {
+        status_id: 3 // Assuming 3 is the ID for "Cancelled" status
+      },
+      include: {
+        camping_spot: true,
+        users: true
+      }
+    });
+
+    console.log(`Booking ${bookingId} cancelled by user ${req.user.user_id}`);
+    
+    // Return success response
+    res.json({ 
+      message: 'Booking cancelled successfully',
+      booking: {
+        id: updatedBooking.booking_id,
+        status: 'Cancelled'
+      }
+    });
+  } catch (error) {
+    console.error('Error cancelling booking:', error);
+    res.status(500).json({ error: 'Failed to cancel booking' });
   }
 });
 

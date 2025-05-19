@@ -117,7 +117,6 @@ async function handleCheckoutSessionCompleted(session) {
       status_id: 2 // CONFIRMED
     }
   });
-
   // Create a transaction record for the payment
   await prisma.transaction.create({
     data: {
@@ -128,6 +127,44 @@ async function handleCheckoutSessionCompleted(session) {
   });
 
   console.log(`[Webhook] Created booking ID ${booking.booking_id} for session ${session.id}`);
+  
+  // Send payment confirmation email
+  try {
+    // Get user details
+    const user = await prisma.public_users.findUnique({
+      where: { user_id: parseInt(user_id) }
+    });
+
+    // Make sure we have the full camping spot details
+    const spotDetails = await prisma.camping_spot.findUnique({
+      where: { camping_spot_id: parseInt(camper_id) }
+    });
+      if (user && spotDetails) {
+      // Only send payment email if booking is in CONFIRMED status (2)
+      if (booking.status_id === 2) {
+        // Import the SimpleGmailService
+        const SimpleGmailService = require('../src/shared/services/simple-gmail.service');
+        
+        // Send payment success email
+        const emailSent = await SimpleGmailService.sendPaymentSuccessEmail(
+          booking, 
+          user, 
+          spotDetails, 
+          parseFloat(session.amount_total / 100)
+        );
+            if (emailSent) {
+        // Field removed from schema, no need to update database
+        
+        console.log(`[Webhook] Payment confirmation email sent for booking ID ${booking.booking_id}`);
+        }
+      } else {
+        console.log(`[Webhook] Booking ${booking.booking_id} is not in CONFIRMED status (status: ${booking.status_id}). Not sending payment email.`);
+      }
+    }
+  } catch (emailError) {
+    // Don't stop execution if email fails - just log the error
+    console.error(`[Webhook] Failed to send payment confirmation email: ${emailError.message}`);
+  }
 }
 
 module.exports = router;

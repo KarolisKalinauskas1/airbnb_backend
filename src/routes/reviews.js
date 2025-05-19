@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
-const { prisma } = require('../config');
+const prisma = require('../config/prisma');
 
 // Apply authentication middleware to all routes
 router.use(authenticate);
@@ -54,66 +54,95 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// Create a new review
-router.post('/', async (req, res) => {
+// Get a review by booking ID - needed for the account page
+router.get('/booking/:id', async (req, res) => {
   try {
-    const { campingSpotId, rating, comment } = req.body;
-
-    // Check if the camping spot exists
-    const campingSpot = await prisma.campingSpot.findUnique({
-      where: { id: parseInt(campingSpotId) }
-    });
-
-    if (!campingSpot) {
-      return res.status(404).json({ error: 'Camping spot not found' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
-    });
-
-    // Check if the user has already reviewed this camping spot
-    const existingReview = await prisma.review.findFirst({
-      where: {
-        userId: user.id,
-        campingSpotId: parseInt(campingSpotId)
+    const bookingId = parseInt(req.params.id);
+    
+    // Find the review associated with the booking
+    const review = await prisma.review.findFirst({
+      where: { 
+        booking_id: bookingId 
       }
     });
 
-    if (existingReview) {
-      return res.status(400).json({ error: 'You have already reviewed this camping spot' });
+    if (!review) {
+      return res.status(404).json({ error: 'Review not found for this booking' });
     }
 
-    // Check if the user has booked this camping spot
-    const booking = await prisma.booking.findFirst({
-      where: {
-        userId: user.id,
-        campingSpotId: parseInt(campingSpotId),
-        endDate: {
-          lt: new Date()
-        }
+    // Return the review data
+    res.json({
+      review_id: review.review_id,
+      rating: review.rating,
+      comment: review.comment,
+      created_at: review.created_at,
+      updated_at: review.updated_at
+    });
+  } catch (error) {
+    console.error('Error fetching review by booking ID:', error);
+    res.status(500).json({ error: 'Failed to fetch review' });
+  }
+});
+
+// Create a new review
+router.post('/', async (req, res) => {
+  try {
+    const { booking_id, rating, comment } = req.body;
+    
+    if (!booking_id) {
+      return res.status(400).json({ error: 'Booking ID is required' });
+    }
+    
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Valid rating (1-5) is required' });
+    }
+
+    // Check if the booking exists and belongs to the user
+    const booking = await prisma.bookings.findUnique({
+      where: { 
+        booking_id: parseInt(booking_id)
+      },
+      include: {
+        camping_spot: true
       }
     });
 
     if (!booking) {
-      return res.status(403).json({ error: 'You can only review camping spots you have stayed at' });
+      return res.status(404).json({ error: 'Booking not found' });
     }
 
-    const review = await prisma.review.create({
+    // Verify the user is the owner of the booking
+    if (booking.user_id !== req.user.user_id) {
+      return res.status(403).json({ error: 'You can only review your own bookings' });
+    }
+
+    // Check if the booking is completed (end date is in the past)
+    const endDate = new Date(booking.end_date);
+    const now = new Date();
+    if (endDate > now) {
+      return res.status(400).json({ error: 'You can only review completed bookings' });
+    }
+
+    // Check if the user has already reviewed this booking
+    const existingReview = await prisma.review.findFirst({
+      where: {
+        booking_id: parseInt(booking_id)
+      }
+    });
+
+    if (existingReview) {
+      return res.status(400).json({ error: 'You have already reviewed this booking' });
+    }
+
+    if (!booking) {
+      return res.status(403).json({ error: 'You can only review camping spots you have stayed at' });
+    }    const review = await prisma.review.create({
       data: {
+        booking_id: parseInt(booking_id),
+        user_id: req.user.user_id,
         rating: parseInt(rating),
-        comment,
-        userId: user.id,
-        campingSpotId: parseInt(campingSpotId)
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        }
+        comment: comment || null,
+        created_at: new Date()
       }
     });
 
@@ -127,13 +156,14 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { rating, comment } = req.body;
+    const reviewId = parseInt(req.params.id);
 
-    const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
-    });
-
+    // Check if review exists
     const review = await prisma.review.findUnique({
-      where: { id: parseInt(req.params.id) }
+      where: { review_id: reviewId },
+      include: {
+        booking: true
+      }
     });
 
     if (!review) {
@@ -141,24 +171,15 @@ router.put('/:id', async (req, res) => {
     }
 
     // Only allow the review author to update
-    if (review.userId !== user.id) {
+    if (review.user_id !== req.user.user_id) {
       return res.status(403).json({ error: 'Not authorized to update this review' });
     }
 
     const updatedReview = await prisma.review.update({
-      where: { id: parseInt(req.params.id) },
+      where: { review_id: reviewId },
       data: {
         rating: parseInt(rating),
-        comment
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        }
+        comment: comment || null
       }
     });
 
@@ -198,4 +219,4 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;

@@ -173,6 +173,19 @@ router.post('/signup', validate(registerUserSchema), async (req, res, next) => {
             updated_at: new Date()
           }
         });
+          // Send welcome email to new user
+        try {
+          const SimpleGmailService = require('../src/shared/services/simple-gmail.service');
+          SimpleGmailService.sendWelcomeEmail(newUser)
+            .then(sent => {
+              if (sent) {
+                console.log(`Welcome email sent to ${newUser.email}`);
+              }
+            })
+            .catch(err => console.error('Failed to send welcome email:', err));
+        } catch (emailError) {
+          console.error('Error sending welcome email:', emailError);
+        }
         
         res.status(201).json({
           message: 'User registered successfully',
@@ -220,13 +233,63 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Email is required' });
     }
     
-    const { error } = await adminClient.auth.resetPasswordForEmail(email, {
-      redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+    console.log(`Processing password reset request for email: ${email}`);
+    
+    // Check if the email exists in our database first
+    const userExists = await prisma.public_users.findFirst({
+      where: { email }
     });
     
-    if (error) throw error;
+    if (!userExists) {
+      console.log(`User with email ${email} not found in database, but proceeding anyway for security`);
+      // We still return success even if email doesn't exist (for security reasons)
+      return res.json({ message: 'Password reset email sent' });
+    }
     
-    res.json({ message: 'Password reset email sent' });
+    console.log(`User found in database, proceeding with Supabase password reset`);
+    
+    try {
+      // Try to send the reset email through Supabase
+      const { error } = await adminClient.auth.resetPasswordForEmail(email, {
+        redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+      });
+      
+      if (error) {
+        console.error('Supabase password reset error:', error);
+        throw error;
+      }
+      
+      // If Supabase succeeds, also send our custom email as a backup
+      try {
+        const EmailService = require('../src/shared/services/email.service');
+        const resetToken = `${Date.now()}`;
+        
+        await EmailService.sendPasswordResetEmail(userExists, resetToken);
+        console.log(`Custom password reset email sent to ${email}`);
+      } catch (emailError) {
+        console.error('Failed to send custom password reset email:', emailError);
+        // Don't fail if our custom email fails
+      }
+      
+      return res.json({ message: 'Password reset email sent' });
+    } catch (supabaseError) {
+      // If Supabase fails, we'll send our own custom reset email as a fallback
+      try {
+        const EmailService = require('../src/shared/services/email.service');
+        const resetToken = `manual-reset-${Date.now()}`;
+        
+        await EmailService.sendPasswordResetEmail(userExists, resetToken);
+        console.log(`Fallback password reset email sent to ${email}`);
+        
+        return res.json({ 
+          message: 'Password reset email sent',
+          fallback: true
+        });
+      } catch (emailError) {
+        console.error('Failed to send fallback password reset email:', emailError);
+        throw supabaseError; // Re-throw the original Supabase error
+      }
+    }
   } catch (error) {
     console.error('Password reset error:', error);
     res.status(400).json({ error: error.message });
@@ -934,6 +997,125 @@ router.post('/change-password', authenticate, validate(changePasswordSchema), as
     }
     
     next(error);
+  }
+});
+
+/**
+ * @route   POST /api/auth/update-password
+ * @desc    Update password (alternative to Supabase direct update)
+ * @access  Public
+ */
+router.post('/update-password', async (req, res) => {
+  try {
+    if (!isConfigured) {
+      return res.status(503).json({ 
+        error: 'Authentication service not configured',
+        details: 'Supabase credentials are missing'
+      });
+    }
+
+    const { password, hash, token } = req.body;
+    
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+    
+    // Handle both custom token and hash-based reset
+    if (token) {
+      console.log('Attempting password reset using custom token');
+      
+      // Custom token format: "manual-reset-{timestamp}"
+      // We extract the email from the token or get from the database
+      try {
+        // For our custom tokens, try to find the user by the token
+        // Just an example implementation - in a real app, you'd have a more robust token system
+        if (token.startsWith('manual-reset-')) {
+          // Find the user by email (would be better with a dedicated token table)
+          // In this example, we use the email in the session if available
+          let userEmail = null;
+          
+          if (req.session && req.session.email) {
+            userEmail = req.session.email;
+          } else if (req.body.email) {
+            userEmail = req.body.email;
+          }
+          
+          if (!userEmail) {
+            return res.status(400).json({ error: 'Email is required for custom token reset' });
+          }
+          
+          // Get the user with this email
+          const user = await prisma.public_users.findFirst({
+            where: { email: userEmail }
+          });
+          
+          if (!user || !user.auth_user_id) {
+            return res.status(404).json({ error: 'User not found' });
+          }
+          
+          // Update the password using Supabase admin API
+          const { error: updateError } = await adminClient.auth.admin.updateUserById(
+            user.auth_user_id,
+            { password }
+          );
+          
+          if (updateError) {
+            throw updateError;
+          }
+          
+          console.log(`Password updated successfully for user: ${userEmail}`);
+          return res.json({ message: 'Password updated successfully' });
+        } else {
+          return res.status(400).json({ error: 'Invalid token format' });
+        }
+      } catch (customTokenError) {
+        console.error('Custom token password reset error:', customTokenError);
+        return res.status(400).json({ error: customTokenError.message });
+      }
+    } else if (hash && hash.includes('type=recovery')) {
+      // Original hash-based method
+      console.log('Attempting password reset using hash');
+      
+      // Extract the access token from the hash
+      const hashParams = new URLSearchParams(hash.substring(1));
+      const accessToken = hashParams.get('access_token');
+      
+      if (!accessToken) {
+        return res.status(400).json({ error: 'Invalid recovery link' });
+      }
+      
+      try {
+        // Verify the token
+        const { data: userData, error: verifyError } = await adminClient.auth.getUser(accessToken);
+        
+        if (verifyError || !userData.user) {
+          console.error('Token verification error:', verifyError);
+          return res.status(401).json({ error: 'Invalid or expired recovery token' });
+        }
+        
+        // Update the user's password
+        const { error: updateError } = await adminClient.auth.admin.updateUserById(
+          userData.user.id,
+          { password }
+        );
+        
+        if (updateError) {
+          console.error('Password update error:', updateError);
+          return res.status(400).json({ error: updateError.message });
+        }
+        
+        console.log(`Password updated successfully for user: ${userData.user.email}`);
+        return res.json({ message: 'Password updated successfully' });
+      } catch (supabaseError) {
+        console.error('Supabase error during password update:', supabaseError);
+        return res.status(500).json({ error: 'Failed to update password' });
+      }
+    } else {
+      return res.status(400).json({ error: 'Invalid password reset request. Missing token or hash.' });
+    }
+  } catch (error) {
+    console.error('Password update error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

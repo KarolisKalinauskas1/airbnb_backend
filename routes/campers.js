@@ -124,11 +124,10 @@ router.get('/', cacheMiddleware(300), async (req, res) => {
       where: {
         NOT: {
           bookings: {
-            some: {
-              AND: [
+            some: {              AND: [
                 { start_date: { lte: end } },
                 { end_date: { gte: start } },
-                { status_id: { in: [2, 4, 5] } }
+                { status_id: { in: [2, 5] } } // Only exclude confirmed (2) and unavailable (5)
               ]
             }
           }

@@ -8,12 +8,14 @@ const prisma = require('./config/prisma');
 
 // Import routes
 const authRoutes = require('./routes/auth');
+const authOauthRoutes = require('./routes/auth/oauth');
+const googleAuthRoutes = require('./routes/auth/google');
 const userRoutes = require('./routes/users');
 const campingSpotsRoutes = require('./routes/campingSpots');
 const bookingRoutes = require('./routes/bookings');
 const reviewRoutes = require('./routes/reviews');
 const dashboardRoutes = require('./routes/dashboard');
-const chatbotRoutes = require('../routes/chatbot'); // Import chatbot routes from the correct location
+const tokenDebugRoutes = require('../routes/debug/token-debug');
 
 // Import middleware
 const { errorHandler } = require('./middleware/error');
@@ -120,6 +122,8 @@ app.use('/api', (req, res, next) => {
 
 // Mount routes after middleware
 app.use('/api/auth', authRoutes);
+app.use('/api/auth/oauth', authOauthRoutes);
+app.use('/api/auth/oauth/google', googleAuthRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/geocoding', campingSpotsRoutes);
@@ -130,8 +134,11 @@ app.use('/api/bookings', bookingRoutes);
 app.use('/api/reviews', authenticate, reviewRoutes);
 app.use('/api/dashboard', authenticate, dashboardRoutes);
 
-// Mount chatbot routes with optional authentication
-app.use('/api/chatbot', optionalAuthenticate, chatbotRoutes); // Use optional auth for chatbot
+// Add token debug routes (only available in development)
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/api/debug', tokenDebugRoutes);
+  console.log('Token debug routes enabled at /api/debug/verify-token');
+}
 
 // Error handling middleware
 app.use(errorHandler);

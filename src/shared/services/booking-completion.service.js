@@ -1,63 +1,151 @@
+/**
+ * Booking Completion Service
+ * 
+ * This service handles tasks related to booking completion and cleanup.
+ */
+
 const { PrismaClient } = require('@prisma/client');
-const EmailService = require('./email.service');
 const prisma = new PrismaClient();
 
 class BookingCompletionService {
-  static async checkCompletedBookings() {
+  /**
+   * Process completed bookings (past checkout date)
+   * This marks bookings as completed if they've passed their end date
+   */
+  static async processCompletedBookings() {
     try {
-      // Find bookings that:
-      // 1. Have end_date in the past
-      // 2. Have status_id = 2 (Confirmed)
-      // 3. Don't have a review yet
-      const completedBookings = await prisma.bookings.findMany({
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Find bookings that have passed their end date but still have a "confirmed" status
+      const bookingsToComplete = await prisma.bookings.findMany({
         where: {
-          end_date: {
-            lt: new Date() // end_date is in the past
-          },
           status_id: 2, // Confirmed status
-          review: null
+          end_date: {
+            lt: today
+          }
         },
         include: {
-          users: true,
-          camping_spot: true
+          camping_spot: true,
+          users: true
         }
       });
-
-      for (const booking of completedBookings) {
-        try {
-          // Send completion email first
-          const bookingDetails = {
-            location: booking.camping_spot.title,
-            dates: `${booking.start_date.toLocaleDateString()} to ${booking.end_date.toLocaleDateString()}`,
-            total: `$${booking.cost}`
-          };
-
-          // Try to send the email
-          await EmailService.sendBookingCompletion(
-            booking.users.email,
-            booking.users.full_name,
-            bookingDetails
-          );
-
-          // Only update status to completed if email was sent successfully
-          await prisma.bookings.update({
+      
+      console.log(`Found ${bookingsToComplete.length} bookings to mark as completed`);
+      
+      // Update each booking's status to completed (status_id 4)
+      if (bookingsToComplete.length > 0) {
+        const updatePromises = bookingsToComplete.map(booking => 
+          prisma.bookings.update({
             where: { booking_id: booking.booking_id },
-            data: {
-              status_id: 4 // Completed status
+            data: { status_id: 4 } // Completed status
+          })
+        );
+        await Promise.all(updatePromises);
+        console.log(`Successfully marked ${updatePromises.length} bookings as completed`);
+        
+        // Send review request emails and create pending review entries
+        try {
+          const EmailService = require('./email-service-factory');
+          
+          for (const booking of bookingsToComplete) {
+            try {
+              // Make sure the booking has actually ended (end date is in the past)
+              const bookingEndDate = new Date(booking.end_date);
+              const today = new Date();
+              
+              if (bookingEndDate < today) {
+                // Send review request email only if the booking has ended
+                await EmailService.sendReviewRequestEmail(
+                  booking, 
+                  booking.users, 
+                  booking.camping_spot
+                );
+                console.log(`Sent review request email for booking ${booking.booking_id}`);
+                
+                // Create a placeholder review entry with null rating and comment
+                try {
+                  // Check if a review already exists for this booking
+                  const existingReview = await prisma.review.findUnique({
+                    where: { booking_id: booking.booking_id }
+                  });
+                  
+                  if (!existingReview) {
+                    await prisma.review.create({
+                      data: {
+                        booking_id: booking.booking_id,
+                        user_id: booking.user_id,
+                        rating: 0, // Use 0 as a placeholder for "not yet reviewed"
+                        comment: null,
+                        created_at: new Date()
+                      }
+                    });
+                    console.log(`Created placeholder review entry for booking ${booking.booking_id}`);
+                  } else {
+                    console.log(`Review already exists for booking ${booking.booking_id}`);
+                  }
+                } catch (reviewError) {
+                  console.error(`Failed to create placeholder review for booking ${booking.booking_id}:`, reviewError);
+                }
+              } else {
+                console.log(`Booking ${booking.booking_id} has been marked as completed, but skipping review request since end date ${bookingEndDate.toISOString()} is not actually in the past yet.`);
+              }
+            } catch (emailError) {
+              console.error(`Failed to send review request email for booking ${booking.booking_id}:`, emailError);
             }
-          });
-
-          console.log(`Processed completed booking ${booking.booking_id} for user ${booking.users.email}`);
-        } catch (error) {
-          console.error(`Error processing booking ${booking.booking_id}:`, error);
-          // If email fails, don't update the status
-          // This ensures we'll try to send the email again in the next run
+          }
+        } catch (emailsError) {
+          console.error('Error sending review request emails:', emailsError);
         }
       }
+      
+      return bookingsToComplete.length;
     } catch (error) {
-      console.error('Error checking completed bookings:', error);
+      console.error('Error processing completed bookings:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Clean up expired pending bookings
+   * This cancels bookings that have been in pending status for too long
+   */
+  static async cleanupExpiredPendingBookings() {
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setHours(cutoffDate.getHours() - 24); // 24 hour expiration
+      
+      // Find pending bookings older than the cutoff
+      const expiredBookings = await prisma.bookings.findMany({
+        where: {
+          status_id: 1, // Pending status
+          created_at: {
+            lt: cutoffDate
+          }
+        }
+      });
+      
+      console.log(`Found ${expiredBookings.length} expired pending bookings to cancel`);
+      
+      // Cancel each expired booking
+      if (expiredBookings.length > 0) {
+        const updatePromises = expiredBookings.map(booking => 
+          prisma.bookings.update({
+            where: { booking_id: booking.booking_id },
+            data: { status_id: 3 } // Cancelled status
+          })
+        );
+        
+        await Promise.all(updatePromises);
+        console.log(`Successfully cancelled ${updatePromises.length} expired bookings`);
+      }
+      
+      return expiredBookings.length;
+    } catch (error) {
+      console.error('Error cleaning up expired pending bookings:', error);
+      throw error;
     }
   }
 }
 
-module.exports = BookingCompletionService; 
+module.exports = BookingCompletionService;

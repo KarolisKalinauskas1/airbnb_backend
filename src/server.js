@@ -8,6 +8,8 @@ const app = require('./app');
 const { PrismaClient } = require('@prisma/client');
 const cron = require('node-cron');
 const BookingCompletionService = require('./shared/services/booking-completion.service');
+const ReminderService = require('./shared/services/reminder.service');
+const BookingReviewService = require('./shared/services/booking-review.service');
 
 // Validate required environment variables
 const requiredEnvVars = [
@@ -111,7 +113,56 @@ function onListening() {
 // Schedule the booking completion check to run daily at midnight
 cron.schedule('0 0 * * *', async () => {
   console.log('Running daily booking completion check...');
-  await BookingCompletionService.checkCompletedBookings();
+  try {
+    const completedCount = await BookingCompletionService.processCompletedBookings();
+    console.log(`Processed ${completedCount} completed bookings`);
+  } catch (error) {
+    console.error('Error processing completed bookings:', error);
+  }
+});
+
+// Schedule booking reminders to run daily at 10:00 AM
+cron.schedule('0 10 * * *', async () => {
+  console.log('Sending booking reminders...');
+  try {
+    const reminderCount = await ReminderService.sendBookingReminders();
+    console.log(`Sent ${reminderCount} booking reminders`);
+  } catch (error) {
+    console.error('Error sending booking reminders:', error);
+  }
+});
+
+// Schedule payment reminders to run every 6 hours
+cron.schedule('0 */6 * * *', async () => {
+  console.log('Sending payment reminders...');
+  try {
+    const reminderCount = await ReminderService.sendPaymentReminders();
+    console.log(`Sent ${reminderCount} payment reminders`);
+  } catch (error) {
+    console.error('Error sending payment reminders:', error);
+  }
+});
+
+// Schedule cleanup of expired pending bookings to run daily at 1:00 AM
+cron.schedule('0 1 * * *', async () => {
+  console.log('Cleaning up expired pending bookings...');
+  try {
+    const cleanupCount = await BookingCompletionService.cleanupExpiredPendingBookings();
+    console.log(`Cleaned up ${cleanupCount} expired pending bookings`);
+  } catch (error) {
+    console.error('Error cleaning up expired pending bookings:', error);
+  }
+});
+
+// Schedule review request emails to run daily at 11:00 AM
+cron.schedule('0 11 * * *', async () => {
+  console.log('Sending review request emails...');
+  try {
+    const emailCount = await BookingReviewService.sendReviewRequestEmails();
+    console.log(`Sent ${emailCount} review request emails`);
+  } catch (error) {
+    console.error('Error sending review request emails:', error);
+  }
 });
 
 // Start server

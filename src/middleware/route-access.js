@@ -8,6 +8,7 @@ const publicRoutes = [
   '/auth/signup',
   '/auth/register',
   '/auth/reset-password',
+  '/auth/update-password',
   '/auth/refresh-token',
   '/auth/status',
   '/auth/session',
@@ -23,6 +24,7 @@ const publicRoutes = [
   '/api/auth/login',
   '/api/auth/register',
   '/api/auth/reset-password',
+  '/api/auth/update-password',
   '/api/auth/refresh-token',
   '/api/auth/status',
   '/api/auth/session',
@@ -58,37 +60,27 @@ const publicRoutes = [
   '/api/countries',
   '/countries',
   '/api/amenities',
-  '/amenities',
-  '/api/camping-spots/amenities',
+  '/amenities',  '/api/camping-spots/amenities',
   '/camping-spots/amenities',
   '/api/camping-spots/countries',
   '/camping-spots/countries',
   
   // Booking success route
   '/api/bookings/success',
-  '/bookings/success',
-  
-  // Chatbot routes
-  '/api/chatbot/suggestions',
-  '/chatbot/suggestions',
-  '/api/chatbot/query',
-  '/chatbot/query'
+  '/bookings/success'
 ];
 
 // List of public route patterns (for routes with parameters)
 const publicPatterns = [
-  /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|refresh\-token)(\?.*)?$/,  // Auth routes with parameters
+  /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|update\-password|refresh\-token)(\?.*)?$/,  // Auth routes with parameters
   /^\/?(api\/)?camping-spots(\/)?(\?.*)?$/, // Allow all GETs to /camping-spots with or without /api prefix
   /^\/?(api\/)?camping-spots\/geocoding\/search(\?.*)?$/, // Allow geocoding search
   /^\/?(api\/)?geocoding\/search(\?.*)?$/, // Allow direct geocoding search
   /^\/?(api\/)?camping-spots\/search(\?.*)?$/, // Allow search
   /^\/?(api\/)?camping-spots\/featured(\/)?$/, // Allow featured spots
-  /^\/?(api\/)?camping-spots\/nearby(\/)?(\?.*)?$/, // Allow nearby spots
-  /^\/?(api\/)?locations(\/)?$/, // Allow locations
+  /^\/?(api\/)?camping-spots\/nearby(\/)?(\?.*)?$/, // Allow nearby spots  /^\/?(api\/)?locations(\/)?$/, // Allow locations
   /^\/?(api\/)?countries(\/)?$/, // Allow countries
-  /^\/?(api\/)?amenities(\/)?$/, // Allow amenities
-  /^\/?(api\/)?chatbot\/suggestions(\?.*)?$/, // Allow chatbot suggestions
-  /^\/?(api\/)?chatbot\/query(\?.*)?$/, // Allow chatbot query
+  /^\/?(api\/)?amenities(\/)?$/ // Allow amenities
 ];
 
 // List of owner-only routes

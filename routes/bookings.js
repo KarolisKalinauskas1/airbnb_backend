@@ -8,6 +8,77 @@ const { authenticate } = require('../middlewares/auth');
 // CORS helpers
 const { applyEmergencyCorsHeaders, logCorsDebugInfo } = require('../utils/cors-helpers');
 
+// Get bookings for the currently logged in user
+router.get('/user', authenticate, async (req, res) => {
+  try {
+    console.log('Getting bookings for user:', req.user?.user_id);
+    
+    if (!req.user || !req.user.user_id) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    const bookings = await prisma.bookings.findMany({
+      where: { 
+        user_id: req.user.user_id
+      },
+      include: {
+        camping_spot: {
+          include: {
+            location: true,
+            images: true
+          }
+        },
+        status_booking_transaction: true,
+        review: {
+          select: {
+            review_id: true,
+            rating: true,
+            comment: true
+          }
+        }
+      },
+      orderBy: {
+        created_at: 'desc'
+      }
+    });
+
+    // Format the data for the frontend
+    const formattedBookings = bookings.map(booking => {
+      const baseCost = parseFloat(booking.cost || 0);
+      const serviceFee = parseFloat((baseCost * 0.1).toFixed(2));
+      const totalCost = parseFloat((baseCost + serviceFee).toFixed(2));
+      
+      return {
+        id: booking.booking_id,
+        start_date: booking.start_date,
+        end_date: booking.end_date,
+        number_of_guests: booking.number_of_guests,
+        status: booking.status_booking_transaction?.status || 'Pending',
+        status_id: booking.status_id,
+        created_at: booking.created_at,
+        baseCost: baseCost,
+        serviceFee: serviceFee,
+        totalCost: totalCost,
+        has_review: !!booking.review,
+        spot: {
+          id: booking.camping_spot?.camping_spot_id,
+          name: booking.camping_spot?.name,
+          description: booking.camping_spot?.description,
+          price_per_night: booking.camping_spot?.price_per_night,
+          location: booking.camping_spot?.location,
+          images: booking.camping_spot?.images || []
+        }
+      };
+    });
+    
+    console.log(`Found ${formattedBookings.length} bookings for user ${req.user.user_id}`);
+    res.json(formattedBookings);
+  } catch (error) {
+    console.error('Error fetching user bookings:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Create checkout session for a booking
 router.post('/create-checkout-session', authenticate, async (req, res) => {
   try {
@@ -454,8 +525,7 @@ router.get('/:id', authenticate, async (req, res) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Authentication required' });
     }
-    
-    const booking = await prisma.bookings.findUnique({
+      const booking = await prisma.bookings.findUnique({
       where: { booking_id: bookingId },
       include: {
         camping_spot: {
@@ -470,7 +540,8 @@ router.get('/:id', authenticate, async (req, res) => {
           }
         },
         status_booking_transaction: true,
-        transaction: true
+        transaction: true,
+        review: true // Include review data
       }
     });
     

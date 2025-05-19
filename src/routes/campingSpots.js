@@ -743,13 +743,13 @@ router.get('/:id/availability', async (req, res) => {
     if (isNaN(spotId)) {
       return res.status(400).json({ error: 'Invalid camping spot ID' });
     }
-    
-    // Get all bookings and blocked dates for this spot in the date range
+      // Get all bookings and blocked dates for this spot in the date range
+    // Include cancelled bookings (status_id 3) in the response as well
     const bookings = await prisma.bookings.findMany({
       where: {
         camper_id: spotId,
         status_id: {
-          in: [1, 2, 5] // Only include Pending (1), Confirmed (2), and Blocked (5) statuses
+          in: [1, 2, 3, 5] // Include Pending (1), Confirmed (2), Cancelled (3), and Blocked (5) statuses
         },
         OR: [
           {

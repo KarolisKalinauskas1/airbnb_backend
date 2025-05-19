@@ -158,11 +158,20 @@ router.post('/register', async (req, res, next) => {
       });
       
       console.log('User created in public_users table, ID:', user.user_id);
-      
-      // Create owner record if needed
+        // Create owner record if needed
       if (is_seller) {
         console.log('Creating owner record...');
         await createOwnerIfNeeded(user.user_id, license);
+      }
+      
+      // Send welcome email to the new user
+      try {
+        const EmailService = require('../shared/services/email.service');
+        await EmailService.sendWelcomeEmail(user);
+        console.log('Welcome email sent to', user.email);
+      } catch (emailError) {
+        console.error('Failed to send welcome email:', emailError);
+        // Don't fail registration if email fails
       }
       
       // Check if session exists before attempting to use it
@@ -509,6 +518,278 @@ router.post('/change-password', async (req, res) => {
         message: error.message
       });
     }
+  }
+});
+
+/**
+ * @route   POST /api/auth/reset-password
+ * @desc    Send password reset email
+ * @access  Public
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    if (!isConfigured) {
+      return res.status(503).json({ 
+        error: 'Authentication service not configured',
+        details: 'Supabase credentials are missing'
+      });
+    }
+
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    console.log(`Processing password reset request for email: ${email}`);
+    
+    // Check if the email exists in our database first
+    const userExists = await prisma.public_users.findFirst({
+      where: { email }
+    });
+    
+    if (!userExists) {
+      console.log(`User with email ${email} not found in database, but proceeding anyway for security`);
+      // We still return success even if email doesn't exist (for security reasons)
+      return res.json({ message: 'Password reset email sent' });
+    }
+    
+    console.log(`User found in database, proceeding with password reset`);
+    
+    try {
+      // Import our JWT-based password reset service
+      const PasswordResetService = require('../shared/services/password-reset.service');
+      // Generate a JWT token for this user
+      const resetToken = PasswordResetService.generateResetToken(userExists);
+        // Use the email service factory to send the email
+      const emailService = require('../shared/services/email-service-factory');
+      await emailService.sendPasswordResetEmail(userExists, resetToken);
+      console.log(`Password reset email sent to ${email} with JWT token`);
+      
+      // Try Supabase as a backup if configured
+      try {
+        const { error } = await adminClient.auth.resetPasswordForEmail(email, {
+          redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+        });
+        
+        if (error) {
+          console.warn('Supabase password reset warning (non-critical):', error);
+        } else {
+          console.log('Supabase password reset email also sent as backup');
+        }
+      } catch (supabaseError) {
+        console.warn('Supabase password reset failed (non-critical):', supabaseError);
+        // Don't fail if Supabase fails - we already sent our primary email
+      }
+      
+      return res.json({ message: 'Password reset email sent' });
+    } catch (emailError) {
+      console.error('Failed to send password reset email:', emailError);
+      
+      // Try Supabase as a fallback
+      try {
+        const { error } = await adminClient.auth.resetPasswordForEmail(email, {
+          redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+        });
+        
+        if (error) {
+          console.error('Supabase fallback password reset error:', error);
+          throw error;
+        }
+        
+        console.log('Fallback Supabase password reset email sent');
+        return res.json({ 
+          message: 'Password reset email sent',
+          fallback: true
+        });
+      } catch (supabaseError) {
+        console.error('All password reset mechanisms failed:', supabaseError);
+        throw emailError; // Re-throw the original email error
+      }
+    }
+  } catch (error) {
+    console.error('Password reset error:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @route   POST /api/auth/update-password
+ * @desc    Update password using JWT token or Supabase hash
+ * @access  Public - No authentication required (stateless process using token verification)
+ */
+router.post('/update-password', async (req, res) => {
+  try {
+    // Log the request for debugging
+    console.log('Password reset request received', {
+      hasPassword: !!req.body.password,
+      hasToken: !!req.body.token,
+      tokenLength: req.body.token ? req.body.token.length : 0,
+      hasHash: !!req.body.hash
+    });
+    
+    if (!isConfigured) {
+      return res.status(503).json({ 
+        error: 'Authentication service not configured',
+        details: 'Supabase credentials are missing'
+      });
+    }
+
+    const { password, hash, token } = req.body;
+    
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+    
+    // Handle JWT token, legacy token, or hash-based reset
+    if (token) {
+      console.log('Attempting password reset using token:', token ? `${token.substring(0, 20)}...` : 'null');
+      try {        // First try our JWT-based verification
+        const PasswordResetService = require('../shared/services/password-reset.service');
+        const tokenData = PasswordResetService.verifyResetToken(token);
+        
+        if (tokenData) {
+          console.log('JWT token verified successfully:', tokenData.userId);
+          
+          // Parse userId to int since it's stored as an integer in the database
+          // but transmitted as a string in JWT tokens
+          const userIdInt = parseInt(tokenData.userId, 10);
+          
+          console.log(`Looking for user with ID: ${userIdInt}`);
+          
+          // Get the user with this ID
+          const user = await prisma.public_users.findUnique({
+            where: { user_id: userIdInt }
+          });
+            // Log the found user for debugging
+          console.log('Found user:', user ? `${user.email} (ID: ${user.user_id})` : 'No user found');
+              if (!user) {
+            console.error('User not found for ID:', userIdInt);
+            return res.status(404).json({ 
+              error: 'User not found',
+              details: `No user found with ID ${userIdInt}`,
+              tokenInfo: {
+                userId: tokenData.userId,
+                email: tokenData.email,
+                tokenId: tokenData.tokenId
+              }
+            });
+          }
+          
+          if (!user.auth_user_id) {
+            console.error('User found but missing auth_user_id:', user.email);
+            return res.status(400).json({ 
+              error: 'User account is not properly configured',
+              details: 'Missing auth_user_id',
+              user: {
+                id: user.user_id,
+                email: user.email
+              }
+            });
+          }
+          
+          // Update the password using Supabase admin API
+          console.log(`Updating password for user ${user.email} (auth_id: ${user.auth_user_id})`);
+          const { error: updateError } = await adminClient.auth.admin.updateUserById(
+            user.auth_user_id,
+            { password }
+          );
+          
+          if (updateError) {
+            console.error('Supabase password update error:', updateError);
+            throw updateError;
+          }
+          
+          console.log(`Password updated successfully for user: ${tokenData.email}`);
+          return res.json({ message: 'Password updated successfully' });
+        } else if (token.startsWith('manual-reset-')) {
+          // Legacy token format - for backward compatibility
+          console.log('Falling back to legacy token format');
+          // Find the user by email (would be better with a dedicated token table)
+          let userEmail = null;
+          
+          if (req.session && req.session.email) {
+            userEmail = req.session.email;
+          } else if (req.body.email) {
+            userEmail = req.body.email;
+          }
+          
+          if (!userEmail) {
+            return res.status(400).json({ error: 'Email is required for legacy token reset' });
+          }
+          
+          // Get the user with this email
+          const user = await prisma.public_users.findFirst({
+            where: { email: userEmail }
+          });
+          
+          if (!user || !user.auth_user_id) {
+            return res.status(404).json({ error: 'User not found' });
+          }
+          
+          // Update the password using Supabase admin API
+          const { error: updateError } = await adminClient.auth.admin.updateUserById(
+            user.auth_user_id,
+            { password }
+          );
+          
+          if (updateError) {
+            throw updateError;
+          }
+          
+          console.log(`Password updated successfully for user: ${userEmail} (legacy token)`);
+          return res.json({ message: 'Password updated successfully' });
+        } else {
+          return res.status(400).json({ error: 'Invalid token format' });
+        }
+      } catch (tokenError) {
+        console.error('Token verification or password reset error:', tokenError);
+        return res.status(400).json({ error: tokenError.message });
+      }
+    } else if (hash && hash.includes('type=recovery')) {
+      // Original hash-based method
+      console.log('Attempting password reset using hash');
+      
+      // Extract the access token from the hash
+      const hashParams = new URLSearchParams(hash.substring(1));
+      const accessToken = hashParams.get('access_token');
+      
+      if (!accessToken) {
+        return res.status(400).json({ error: 'Invalid recovery link' });
+      }
+      
+      try {
+        // Verify the token
+        const { data: userData, error: verifyError } = await adminClient.auth.getUser(accessToken);
+        
+        if (verifyError || !userData.user) {
+          console.error('Token verification error:', verifyError);
+          return res.status(401).json({ error: 'Invalid or expired recovery token' });
+        }
+        
+        // Update the user's password
+        const { error: updateError } = await adminClient.auth.admin.updateUserById(
+          userData.user.id,
+          { password }
+        );
+        
+        if (updateError) {
+          console.error('Password update error:', updateError);
+          return res.status(400).json({ error: updateError.message });
+        }
+        
+        console.log(`Password updated successfully for user: ${userData.user.email}`);
+        return res.json({ message: 'Password updated successfully' });
+      } catch (supabaseError) {
+        console.error('Supabase error during password update:', supabaseError);
+        return res.status(500).json({ error: 'Failed to update password' });
+      }
+    } else {
+      return res.status(400).json({ error: 'Invalid password reset request. Missing token or hash.' });
+    }
+  } catch (error) {
+    console.error('Password update error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
