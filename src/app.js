@@ -6,7 +6,7 @@ const logger = require('morgan');
 const helmet = require('helmet');
 const prisma = require('./config/prisma');
 
-// Import routes
+// Import routes from src/routes (consolidated structure)
 const authRoutes = require('./routes/auth');
 const authOauthRoutes = require('./routes/auth/oauth');
 const googleAuthRoutes = require('./routes/auth/google');
@@ -15,8 +15,7 @@ const campingSpotsRoutes = require('./routes/campingSpots');
 const bookingRoutes = require('./routes/bookings');
 const reviewRoutes = require('./routes/reviews');
 const dashboardRoutes = require('./routes/dashboard');
-const tokenDebugRoutes = require('../routes/debug/token-debug');
-
+const healthRoutes = require('./routes/health');
 // Import middleware
 const { errorHandler } = require('./middleware/error');
 const routeAccessMiddleware = require('./middleware/route-access');
@@ -127,18 +126,12 @@ app.use('/api/auth/oauth/google', googleAuthRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/geocoding', campingSpotsRoutes);
-
-// Mount bookings routes
 app.use('/api/bookings', bookingRoutes);
-
 app.use('/api/reviews', authenticate, reviewRoutes);
 app.use('/api/dashboard', authenticate, dashboardRoutes);
+app.use('/api/health', healthRoutes);
 
-// Add token debug routes (only available in development)
-if (process.env.NODE_ENV !== 'production') {
-  app.use('/api/debug', tokenDebugRoutes);
-  console.log('Token debug routes enabled at /api/debug/verify-token');
-}
+
 
 // Error handling middleware
 app.use(errorHandler);

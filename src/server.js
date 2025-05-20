@@ -107,15 +107,12 @@ function onListening() {
     : 'port ' + addr.port;
   debug('Listening on ' + bind);
   console.log(`Server is running on port ${addr.port}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 }
 
 // Schedule the booking completion check to run daily at midnight
 cron.schedule('0 0 * * *', async () => {
-  console.log('Running daily booking completion check...');
   try {
-    const completedCount = await BookingCompletionService.processCompletedBookings();
-    console.log(`Processed ${completedCount} completed bookings`);
+    await BookingCompletionService.processCompletedBookings();
   } catch (error) {
     console.error('Error processing completed bookings:', error);
   }
@@ -123,10 +120,8 @@ cron.schedule('0 0 * * *', async () => {
 
 // Schedule booking reminders to run daily at 10:00 AM
 cron.schedule('0 10 * * *', async () => {
-  console.log('Sending booking reminders...');
   try {
-    const reminderCount = await ReminderService.sendBookingReminders();
-    console.log(`Sent ${reminderCount} booking reminders`);
+    await ReminderService.sendBookingReminders();
   } catch (error) {
     console.error('Error sending booking reminders:', error);
   }
@@ -134,10 +129,8 @@ cron.schedule('0 10 * * *', async () => {
 
 // Schedule payment reminders to run every 6 hours
 cron.schedule('0 */6 * * *', async () => {
-  console.log('Sending payment reminders...');
   try {
-    const reminderCount = await ReminderService.sendPaymentReminders();
-    console.log(`Sent ${reminderCount} payment reminders`);
+    await ReminderService.sendPaymentReminders();
   } catch (error) {
     console.error('Error sending payment reminders:', error);
   }
@@ -156,10 +149,8 @@ cron.schedule('0 1 * * *', async () => {
 
 // Schedule review request emails to run daily at 11:00 AM
 cron.schedule('0 11 * * *', async () => {
-  console.log('Sending review request emails...');
   try {
-    const emailCount = await BookingReviewService.sendReviewRequestEmails();
-    console.log(`Sent ${emailCount} review request emails`);
+    await BookingReviewService.sendReviewRequestEmails();
   } catch (error) {
     console.error('Error sending review request emails:', error);
   }
@@ -172,10 +163,8 @@ server.on('listening', onListening);
 
 // Handle shutdown gracefully
 async function gracefulShutdown() {
-  console.log('Shutting down gracefully...');
   try {
     await prisma.$disconnect();
-    console.log('Database connection closed');
     process.exit(0);
   } catch (error) {
     console.error('Error during shutdown:', error);
