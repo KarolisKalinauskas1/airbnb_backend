@@ -11,49 +11,44 @@
       "src": "/api/(.*)",
       "dest": "/server.js",
       "headers": {
-        "Cache-Control": "public, max-age=0, must-revalidate"
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block"
       }
     },
     {
       "src": "/health",
       "dest": "/server.js",
       "headers": {
-        "Cache-Control": "public, max-age=60"
+        "Cache-Control": "public, max-age=60",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block"
       }
     },
     {
       "src": "/public/(.*)",
       "dest": "/public/$1",
       "headers": {
-        "Cache-Control": "public, max-age=604800"
+        "Cache-Control": "public, max-age=604800",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block"
       }
     },
     {
       "src": "/(.*)",
-      "dest": "/server.js"
+      "dest": "/server.js",
+      "headers": {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block"
+      }
     }
   ],
   "env": {
     "NODE_ENV": "production"
   },
-  "regions": ["fra1"],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        {
-          "key": "X-Content-Type-Options",
-          "value": "nosniff"
-        },
-        {
-          "key": "X-Frame-Options",
-          "value": "DENY"
-        },
-        {
-          "key": "X-XSS-Protection",
-          "value": "1; mode=block"
-        }
-      ]
-    }
-  ]
+  "regions": ["fra1"]
 }
