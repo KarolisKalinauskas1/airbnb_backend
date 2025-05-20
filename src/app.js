@@ -55,26 +55,49 @@ app.use(helmet({
   originAgentCluster: true,
 }));
 
-// CORS configuration
+// CORS configuration with enhanced error handling and logging
 app.use(cors({
   origin: function(origin, callback) {
+    // Define allowed origins
     const allowedOrigins = [
       'http://localhost:5173',
       'http://localhost:5174',
-      process.env.CORS_ORIGIN
+      'https://airbnb-frontend-i8p5-88p7a4emc-karoliskalinauskas1s-projects.vercel.app',
+      'https://airbnb-frontend.vercel.app',
+      'https://*.vercel.app',
+      process.env.CORS_ORIGIN,
+      process.env.FRONTEND_URL
     ].filter(Boolean); // Remove undefined/null values
     
     // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+    if (!origin) {
+      console.warn('Request with no origin - allowing (e.g., curl requests)');
+      return callback(null, true);
     }
+    
+    // Check if the origin is in the allowed list
+    if (allowedOrigins.some(allowed => {
+      if (allowed.includes('*')) {
+        // Handle wildcard subdomains
+        const domain = allowed.replace('*', '.*');
+        return new RegExp(`^${domain}$`).test(origin);
+      }
+      return origin === allowed;
+    })) {
+      return callback(null, true);
+    }
+    
+    console.error(`CORS blocked for origin: ${origin}. Allowed origins:`, allowedOrigins);
+    callback(new Error(`Not allowed by CORS. Origin: ${origin}`));
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  credentials: true,
+  optionsSuccessStatus: 200 // Some legacy browsers (IE11, various SmartTVs) choke on 204
 }));
+
+// Handle preflight requests
+app.options('*', cors());
 
 // Health check endpoints
 app.get('/health', (req, res) => {
