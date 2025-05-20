@@ -1,21 +1,19 @@
 {
   "name": "airbnb-backend",
   "version": "1.0.0",
-  "description": "Backend for Airbnb-like camping platform",  "main": "src/server.js",
-  "scripts": {
+  "description": "Backend for Airbnb-like camping platform",  "main": "src/server.js",  "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "jest",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio",
-    "prisma:deploy": "prisma migrate deploy",
+    "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
+    "prisma:migrate": "prisma migrate dev --schema=./prisma/schema.prisma",
+    "prisma:studio": "prisma studio --schema=./prisma/schema.prisma",
+    "prisma:deploy": "prisma migrate deploy --schema=./prisma/schema.prisma",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "build": "npm run prisma:generate",
+    "lint:fix": "eslint . --fix",    "build": "npm run prisma:generate",
     "smoke-test": "node scripts/smoke-test.js",
     "railway": "node scripts/railway-healthcheck.js",
-    "postinstall": "npm run prisma:generate"
+    "postinstall": "prisma generate --schema=./prisma/schema.prisma"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
