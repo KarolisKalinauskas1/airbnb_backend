@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
-const logger = require('morgan');
+// Morgan logger removed for production
 const helmet = require('helmet');
 const prisma = require('./config/prisma');
 
@@ -26,7 +26,7 @@ const { optionalAuthenticate } = require('./middleware/auth'); // Import optiona
 const app = express();
 
 // Basic middleware
-app.use(logger('dev'));
+// Logger disabled for production
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());

@@ -1,22 +1,15 @@
 /**
- * Simple helper to provide consistent debug logging
+ * Production-safe debug logger (no-op)
  */
 function debug(prefix, ...args) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [${prefix}]`, ...args);
+  // No logging in production
 }
 
 /**
- * Enhanced error logging
+ * Production-safe error logger (no-op)
  */
 function errorWithContext(prefix, error, context = {}) {
-  const timestamp = new Date().toISOString();
-  console.error(
-    `[${timestamp}] [ERROR] [${prefix}]`,
-    error.message,
-    '\nStack:', error.stack,
-    '\nContext:', context
-  );
+  // No logging in production
 }
 
 module.exports = {
