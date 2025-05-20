@@ -149,14 +149,30 @@ process.on('unhandledRejection', (error) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
-  process.exit(1);
+  // Don't exit in production/serverless environment
+  if (process.env.NODE_ENV !== 'production') {
+    process.exit(1);
+  }
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  await prisma.$disconnect();
-  process.exit(0);
-});
+// Graceful shutdown - conditional for serverless environments
+if (process.env.NODE_ENV !== 'production') {
+  process.on('SIGTERM', async () => {
+    console.log('SIGTERM received. Shutting down gracefully...');
+    await prisma.$disconnect();
+    process.exit(0);
+  });
+} else {
+  // In serverless environments, handle shutdown differently
+  process.on('SIGTERM', async () => {
+    console.log('SIGTERM received in serverless environment');
+    try {
+      await prisma.$disconnect();
+    } catch (err) {
+      console.error('Error during prisma disconnect:', err);
+    }
+    // Don't exit process in serverless environment
+  });
+}
 
 module.exports = app;

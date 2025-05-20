@@ -21,11 +21,13 @@ const prisma = new PrismaClient({
   }
 });
 
-// Add connection event listeners
-prisma.$on('query', e => {
-  console.log('Query: ' + e.query);
-  console.log('Duration: ' + e.duration + 'ms');
-});
+// For production, disable verbose connection logging
+if (process.env.NODE_ENV !== 'production') {
+  prisma.$on('query', e => {
+    console.log('Query: ' + e.query);
+    console.log('Duration: ' + e.duration + 'ms');
+  });
+}
 
 prisma.$on('error', e => {
   console.error('Prisma error event:', e);
@@ -36,21 +38,25 @@ let isConnected = false;
 let connectionAttempts = 0;
 const MAX_RETRIES = 3;
 
-// Test the connection with retry mechanism
+// Test the connection with retry mechanism - modified for serverless
 async function connect() {
   try {
     connectionAttempts++;
     // Test the connection with a simple query
     await prisma.$connect();
     
-    // Test the public schema
-    await prisma.$queryRaw`SELECT 1`;
+    // Test the public schema (with timeout for serverless)
+    const connectPromise = prisma.$queryRaw`SELECT 1`;
+    const timeout = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database connection timeout')), 5000)
+    );
+    
+    await Promise.race([connectPromise, timeout]);
     
     console.log('Prisma connected successfully to database');
     isConnected = true;
     connectionAttempts = 0;
-    return true;
-  } catch (err) {
+    return true;  } catch (err) {
     console.error(`Prisma connection error (attempt ${connectionAttempts}/${MAX_RETRIES}):`, err);
     
     if (connectionAttempts < MAX_RETRIES) {
@@ -59,7 +65,14 @@ async function connect() {
       return connect();
     }
     
-    throw err;
+    // In serverless environments, we should fail gracefully
+    if (process.env.NODE_ENV === 'production') {
+      console.error('Failed to connect to database in serverless environment');
+      isConnected = false;
+      return false;
+    } else {
+      throw err;
+    }
   }
 }
 
