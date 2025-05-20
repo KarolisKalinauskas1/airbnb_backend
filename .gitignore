@@ -8,6 +8,8 @@ yarn-error.log
 .env
 .env.local
 .env.*.local
+.env.example.vercel
+.env.production
 
 # Build output
 dist/
