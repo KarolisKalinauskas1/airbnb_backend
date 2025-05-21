@@ -26,11 +26,10 @@ router.get('/spot/:id', async (req, res) => {
     }
     
     console.log(`Found camping spot with ID ${id}: ${spot.title}`);
-    
-    // Find all bookings for this camping spot
+      // Find all bookings for this camping spot
     const bookings = await prisma.bookings.findMany({
       where: {
-        camper_id: parseInt(id)
+        camper_id: parseInt(id)  // This is correct, in the schema camper_id relates to camping_spot_id
       },
       select: {
         booking_id: true
@@ -333,11 +332,10 @@ router.get('/stats/:id', async (req, res) => {
   try {
     const { id } = req.params;
     console.log(`Getting review stats for camping spot ID: ${id}`);
-    
-    // First find all bookings for this camping spot
+      // First find all bookings for this camping spot
     const bookings = await prisma.bookings.findMany({
       where: {
-        camper_id: parseInt(id)
+        camper_id: parseInt(id)  // This is correct, in the schema camper_id relates to camping_spot_id
       },
       select: {
         booking_id: true
