@@ -11,12 +11,12 @@ router.get('/spot/:id', async (req, res) => {
     
     const reviews = await prisma.review.findMany({
       where: {
-        booking: {
-          camping_spot_id: parseInt(id)
+        bookings: {
+          camper_id: parseInt(id)
         }
       },
       include: {
-        booking: {
+        bookings: {
           include: {
             users: {
               select: {
@@ -31,17 +31,17 @@ router.get('/spot/:id', async (req, res) => {
         created_at: 'desc'
       }
     });
-    
-    // Format reviews for response
+      // Format reviews for response
     const formattedReviews = reviews.map(review => ({
       review_id: review.review_id,
       booking_id: review.booking_id,
       rating: review.rating,
       comment: review.comment,
       created_at: review.created_at,
-      user: review.booking.users
+      user: review.bookings.users
     }));
     
+    console.log('Formatted reviews:', formattedReviews);
     res.json(formattedReviews);
   } catch (error) {
     console.error('Get Reviews Error:', error);
@@ -277,11 +277,12 @@ router.delete('/:id', authenticate, async (req, res) => {
 router.get('/stats/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    console.log(`Getting review stats for camping spot ID: ${id}`);
     
     const reviews = await prisma.review.findMany({
       where: {
-        booking: {
-          camping_spot_id: parseInt(id)
+        bookings: {
+          camper_id: parseInt(id)
         }
       },
       select: {
