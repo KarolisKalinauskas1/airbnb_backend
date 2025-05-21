@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../config/prisma');
 const { authenticate } = require('../middleware/auth');
+const featuresRoutes = require('../features/dashboard/routes');
+
+// Use all routes from the features module
+router.use('/', featuresRoutes);
 
 /**
  * Ensure a value is a proper number

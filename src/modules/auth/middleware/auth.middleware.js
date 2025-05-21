@@ -1,5 +1,5 @@
 const rateLimit = require('express-rate-limit');
-const prisma = require('../config/prisma');
+const prisma = require('../../../config/prisma');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 

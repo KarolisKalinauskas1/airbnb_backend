@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const prisma = require('../config/prisma');
-const { authenticate } = require('../modules/auth/middleware/auth.middleware');
+const prisma = require('../../config/prisma');
+const { authenticate } = require('../../middleware/auth');
 
 /**
  * Ensure a value is a proper number
