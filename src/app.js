@@ -150,7 +150,8 @@ app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/geocoding', campingSpotsRoutes);
 app.use('/api/bookings', bookingRoutes);
-app.use('/api/reviews', authenticate, reviewRoutes);
+// Make reviews publicly accessible without authentication
+app.use('/api/reviews', reviewRoutes);  
 app.use('/api/dashboard', authenticate, dashboardRoutes);
 app.use('/api/health', healthRoutes);
 

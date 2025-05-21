@@ -8,7 +8,7 @@ const { authenticate } = require('../src/middleware/auth');
 router.get('/spot/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    console.log(`Searching for reviews with camping spot ID: ${id}`);
+    console.log(`[REVIEWS API] Searching for reviews with camping spot ID: ${id}`);
     
     // Use a direct join approach with Prisma
     const reviews = await prisma.review.findMany({
@@ -121,6 +121,16 @@ router.get('/stats/:id', async (req, res) => {
     console.error('Review Stats Error:', error);
     res.status(500).json({ error: 'Failed to fetch review statistics' });
   }
+});
+
+// Diagnostic endpoint to test if reviews API is accessible
+router.get('/health', (req, res) => {
+  console.log("[REVIEWS API] Health check called");
+  res.json({
+    status: 'ok',
+    message: 'Reviews API is working',
+    timestamp: new Date().toISOString()
+  });
 });
 
 module.exports = router;
