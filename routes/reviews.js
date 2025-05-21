@@ -12,7 +12,7 @@ router.get('/spot/:id', async (req, res) => {
     const reviews = await prisma.review.findMany({
       where: {
         booking: {
-          camper_id: parseInt(id)
+          camping_spot_id: parseInt(id)
         }
       },
       include: {
@@ -281,7 +281,7 @@ router.get('/stats/:id', async (req, res) => {
     const reviews = await prisma.review.findMany({
       where: {
         booking: {
-          camper_id: parseInt(id)
+          camping_spot_id: parseInt(id)
         }
       },
       select: {
