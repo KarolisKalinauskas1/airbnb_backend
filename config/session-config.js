@@ -3,10 +3,14 @@
  */
 const ONE_WEEK = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 
-// Determine if we're in production
+/**
+ * Determine if we're in production
+ */
 const isProduction = process.env.NODE_ENV === 'production';
 
-// Configure session options
+/**
+ * Configure session options
+ */
 const sessionConfig = {
   name: 'camping.sid', // Unique name for the session cookie
   secret: process.env.SESSION_SECRET || 'camping-session-secret',
