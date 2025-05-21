@@ -8,11 +8,49 @@ const { authenticate } = require('../src/middleware/auth');
 router.get('/spot/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    console.log(`Searching for reviews with camping spot ID: ${id}`);
     
+    // Try a direct join query to verify the database structure
+    console.log('Executing SQL query to find reviews by camper_id join...');
+    
+    // First let's check if the camping spot exists
+    const spot = await prisma.camping_spot.findUnique({
+      where: {
+        camping_spot_id: parseInt(id)
+      }
+    });
+    
+    if (!spot) {
+      console.log(`No camping spot found with ID: ${id}`);
+      return res.json([]);
+    }
+    
+    console.log(`Found camping spot with ID ${id}: ${spot.title}`);
+    
+    // Find all bookings for this camping spot
+    const bookings = await prisma.bookings.findMany({
+      where: {
+        camper_id: parseInt(id)
+      },
+      select: {
+        booking_id: true
+      }
+    });
+    
+    console.log(`Found ${bookings.length} bookings for camping spot ${id}`);
+    
+    if (bookings.length === 0) {
+      return res.json([]);
+    }
+    
+    const bookingIds = bookings.map(b => b.booking_id);
+    console.log('Booking IDs:', bookingIds);
+    
+    // Find reviews for these bookings
     const reviews = await prisma.review.findMany({
       where: {
-        bookings: {
-          camper_id: parseInt(id)
+        booking_id: {
+          in: bookingIds
         }
       },
       include: {
@@ -31,15 +69,32 @@ router.get('/spot/:id', async (req, res) => {
         created_at: 'desc'
       }
     });
-      // Format reviews for response
-    const formattedReviews = reviews.map(review => ({
-      review_id: review.review_id,
-      booking_id: review.booking_id,
-      rating: review.rating,
-      comment: review.comment,
-      created_at: review.created_at,
-      user: review.bookings.users
-    }));
+    
+    console.log(`Found ${reviews.length} reviews for bookings of camping spot ${id}`);
+    console.log('Raw reviews data:', JSON.stringify(reviews.slice(0, 2), null, 2)); // Log just first 2 to avoid console overflow
+    
+    // Format reviews for response with better error handling
+    const formattedReviews = reviews.map(review => {
+      try {
+        return {
+          review_id: review.review_id,
+          booking_id: review.booking_id,
+          rating: review.rating,
+          comment: review.comment,
+          created_at: review.created_at,
+          user: review.bookings?.users || { full_name: 'Anonymous' }
+        };
+      } catch (err) {
+        console.error('Error formatting review:', err);
+        return {
+          review_id: review.review_id || 0,
+          rating: review.rating || 0,
+          comment: review.comment || 'No comment provided',
+          created_at: review.created_at || new Date(),
+          user: { full_name: 'Anonymous' }
+        };
+      }
+    });
     
     console.log('Formatted reviews:', formattedReviews);
     res.json(formattedReviews);
@@ -279,10 +334,34 @@ router.get('/stats/:id', async (req, res) => {
     const { id } = req.params;
     console.log(`Getting review stats for camping spot ID: ${id}`);
     
+    // First find all bookings for this camping spot
+    const bookings = await prisma.bookings.findMany({
+      where: {
+        camper_id: parseInt(id)
+      },
+      select: {
+        booking_id: true
+      }
+    });
+    
+    console.log(`Found ${bookings.length} bookings for camping spot ${id}`);
+    
+    if (bookings.length === 0) {
+      return res.json({
+        count: 0,
+        average: 0,
+        distribution: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 }
+      });
+    }
+    
+    const bookingIds = bookings.map(b => b.booking_id);
+    console.log('Booking IDs for stats:', bookingIds);
+    
+    // Find reviews for these bookings
     const reviews = await prisma.review.findMany({
       where: {
-        bookings: {
-          camper_id: parseInt(id)
+        booking_id: {
+          in: bookingIds
         }
       },
       select: {
