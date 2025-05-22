@@ -181,26 +181,27 @@ const authenticate = async (req, res, next) => {
       return res.status(403).json({
         error: 'Account Not Verified',
         message: 'Your account is not verified'
-      });
-    }
-
-    // Attach user to request
+      });    }    // Attach user to request
     req.user = {
       user_id: user.user_id,
       email: user.email,
       full_name: user.full_name,
       isowner: user.isowner === '1' ? '1' : '0',
-      auth_user_id: decoded.sub
-    };
-
-    // Token refresh logic
+      verified: user.verified,
+      auth_user_id: decoded.sub  // This is the Supabase UUID
+    };    // Token refresh logic
     const tokenExp = decoded.exp * 1000;
     const now = Date.now();
     const refreshThreshold = 24 * 60 * 60 * 1000; // 24 hours
 
     if (tokenExp - now < refreshThreshold) {
+      // Create a new token with the auth_user_id (Supabase UUID) in the sub claim
       const newToken = jwt.sign(
-        { sub: user.user_id, email: user.email },
+        { 
+          sub: decoded.sub, // Keep the original Supabase UUID
+          email: user.email,
+          name: user.full_name 
+        },
         process.env.JWT_SECRET,
         { expiresIn: '7d' }
       );

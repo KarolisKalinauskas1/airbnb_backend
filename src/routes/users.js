@@ -113,12 +113,12 @@ router.get('/me', async (req, res) => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
-    }    // Get Supabase auth user ID (UUID)
-    const supabaseAuthId = req.user.user_id;
+    }    // Get Supabase auth user ID (UUID from token)
+    const supabaseAuthId = req.user.auth_user_id;
     
     if (!supabaseAuthId) {
-      console.error('Invalid user_id format:', req.user.user_id);
-      return res.status(500).json({ error: 'Invalid user ID format' });
+      console.error('Missing auth_user_id:', req.user);
+      return res.status(500).json({ error: 'Missing authentication ID' });
     }
 
     try {
@@ -318,6 +318,53 @@ router.post('/change-password', async (req, res) => {
   } catch (error) {
     console.error('Password change error:', error);
     res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+/**
+ * @route   GET /api/users/debug-token
+ * @desc    Debug JWT token data (administrators only)
+ * @access  Private
+ */
+router.get('/debug-token', async (req, res) => {
+  try {
+    // Only allow in development environment
+    if (process.env.NODE_ENV !== 'development' && process.env.ALLOW_TOKEN_DEBUG !== 'true') {
+      return res.status(403).json({ error: 'Forbidden in production' });
+    }
+
+    // Log the user object from auth middleware
+    console.log('DEBUG - User object from token:', req.user);
+    
+    // Get the token
+    const token = (
+      req.headers.authorization?.replace('Bearer ', '') ||
+      req.cookies?.token ||
+      req.body?.token
+    );
+
+    if (!token) {
+      return res.status(400).json({ error: 'No token provided' });
+    }
+
+    // Use the jwt-debug utility to decode the token
+    const jwtDebug = require('../scripts/jwt-debug');
+    const tokenInfo = jwtDebug.processToken(token);
+
+    res.json({
+      user: req.user,
+      tokenInfo,
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        DATABASE_URL: process.env.DATABASE_URL ? '[REDACTED]' : 'Not set'
+      }
+    });
+  } catch (error) {
+    console.error('Error in debug endpoint:', error);
+    res.status(500).json({
+      error: 'Debug error',
+      message: error.message
+    });
   }
 });
 

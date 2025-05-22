@@ -68,6 +68,7 @@ router.get('/spot/:id', async (req, res) => {
 });
 
 // Get review statistics for a camping spot
+// Get review statistics for a camping spot (public endpoint - no auth required)
 router.get('/stats/:id', async (req, res) => {
   try {
     const { id } = req.params;

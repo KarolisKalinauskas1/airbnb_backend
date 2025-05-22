@@ -53,9 +53,25 @@ router.get('/analytics', async (req, res) => {
 
     console.log('Fetching analytics for userId:', userId);
 
+    // First find the public user record for this authenticated user
+    const publicUser = await prisma.public_users.findFirst({
+      where: {
+        OR: [
+          { email: req.user.email },
+          { auth_user_id: req.user.auth_user_id },
+          { user_id: parseInt(userId) }
+        ]
+      }
+    });
+
+    if (!publicUser) {
+      console.error('Public user record not found for auth user:', req.user);
+      return res.status(404).json({ error: 'User record not found' });
+    }
+
     // Get all camping spots for this owner with detailed information
     const spotStats = await prisma.camping_spot.findMany({
-      where: { owner_id: userId },
+      where: { owner_id: publicUser.user_id },
       include: {
         bookings: {
           include: { 
@@ -345,9 +361,25 @@ router.get('/spots', async (req, res) => {
       return res.status(400).json({ error: 'User ID not found in request' });
     }
 
+    // First find the public user by auth_user_id or user_id
+    const publicUser = await prisma.public_users.findFirst({
+      where: {
+        OR: [
+          { email: req.user.email },
+          { auth_user_id: req.user.auth_user_id },
+          { user_id: parseInt(userId) }
+        ]
+      }
+    });
+
+    if (!publicUser) {
+      console.error('User not found in database for /spots endpoint');
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     const spots = await prisma.camping_spot.findMany({
       where: {
-        owner_id: userId
+        owner_id: publicUser.user_id
       },
       include: {
         images: true,
@@ -372,15 +404,30 @@ router.get('/spots', async (req, res) => {
 router.get('/bookings', authenticate, async (req, res) => {
   try {
     // Check if user is owner
-    if (!req.user || req.user.isowner !== 1) {
+    if (!req.user || req.user.isowner !== '1') {
       console.log('User owner status:', req.user?.isowner);
       return res.status(403).json({ error: 'Owner account required' });
+    }
+
+    // Find the public user by auth_user_id or email
+    const publicUser = await prisma.public_users.findFirst({
+      where: {
+        OR: [
+          { email: req.user.email },
+          { auth_user_id: req.user.auth_user_id }
+        ]
+      }
+    });
+
+    if (!publicUser) {
+      console.error('Public user not found for bookings endpoint');
+      return res.status(404).json({ error: 'User not found' });
     }
 
     // First get all spots owned by the user
     const spots = await prisma.camping_spot.findMany({
       where: {
-        owner_id: req.user.user_id
+        owner_id: publicUser.user_id
       },
       select: {
         camping_spot_id: true
@@ -427,18 +474,18 @@ router.get('/', async (req, res) => {
     if (!req.user) {
       console.log('No user found in request');
       return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    console.log('Dashboard request from user:', req.user);
+    }    console.log('Dashboard request from user:', req.user);
     
     // First find the public user by auth_user_id or user_id
     const publicUser = await prisma.public_users.findFirst({
       where: {
         OR: [
-          // Try to match by user_id first
-          { user_id: req.user.user_id },
-          // Fallback to auth_user_id if needed
-          { auth_user_id: req.user.auth_user_id || req.user.id }
+          // Try to match by email first (most reliable)
+          { email: req.user.email },
+          // Try to match by auth_user_id (Supabase UUID)
+          { auth_user_id: req.user.auth_user_id },
+          // Fallback to user_id as integer
+          { user_id: parseInt(req.user.user_id) }
         ]
       }
     });
