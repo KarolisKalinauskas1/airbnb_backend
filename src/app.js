@@ -301,28 +301,126 @@ app.post('/api/checkout/create-session', async (req, res) => {
       status: 'success'
     });
   } catch (error) {
-    // Add specific error handling for common Stripe issues
-    if (error.type === 'StripeInvalidRequestError') {
-      if (error.message.includes('valid integer')) {
-        // Most common error is the amount not being a valid integer
+    console.error('Error in checkout/create-session:', error);
+    
+    // Handle Stripe specific errors
+    if (error.type && error.type.startsWith('Stripe')) {
+      if (error.type === 'StripeInvalidRequestError') {
         return res.status(400).json({ 
-          error: 'Invalid payment amount format',
+          error: 'Invalid payment request',
           details: error.message
         });
       }
-      return res.status(400).json({ error: `Payment request error: ${error.message}` });
+      
+      return res.status(500).json({ 
+        error: 'Payment processing error',
+        details: error.message
+      });
     }
     
-    if (error.type === 'StripeAPIError') {
-      return res.status(503).json({ error: 'Payment service temporarily unavailable' });
+    // General error
+    return res.status(500).json({ 
+      error: 'Failed to initialize payment',
+      message: error.message
+    });
+  }
+});
+
+// Add a handler for /api/bookings/create-checkout-session for CampingSpotDetail.vue
+app.post('/api/bookings/create-checkout-session', async (req, res) => {
+  // This is the endpoint used by CampingSpotDetail.vue
+  try {
+    console.log('Bookings create-checkout-session endpoint called');
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    
+    // Extract data
+    const data = req.body;
+    console.log('Received booking checkout data:', JSON.stringify(data));
+    
+    // Validate the data
+    if (!data.camper_id && !data.camping_spot_id) {
+      return res.status(400).json({ 
+        error: 'Missing camping spot ID',
+        details: 'Please provide a valid camping spot ID'
+      });
     }
     
-    if (error.type === 'StripeAuthenticationError') {
-      return res.status(500).json({ error: 'Payment authentication error' });
+    if (!data.total) {
+      return res.status(400).json({ 
+        error: 'Missing payment amount',
+        details: 'Please provide a valid payment amount'
+      });
     }
     
-    // Generic error response
-    return res.status(500).json({ error: 'Failed to process payment request' });
+    // Create session config
+    const sessionConfig = {
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'eur',
+            product_data: {
+              name: data.spot_name || 'Camping Spot Booking',
+            },
+            unit_amount: Math.round(data.total * 100), // Convert to cents
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/campers/${data.camper_id || data.camping_spot_id}`
+    };
+    
+    // Add metadata
+    const metadata = {};
+    if (data.camper_id) metadata.camper_id = String(data.camper_id);
+    if (data.camping_spot_id) metadata.camper_id = String(data.camping_spot_id);
+    if (data.user_id) metadata.user_id = String(data.user_id);
+    if (data.start_date) metadata.start_date = String(data.start_date);
+    if (data.end_date) metadata.end_date = String(data.end_date);
+    if (data.number_of_guests) metadata.number_of_guests = String(data.number_of_guests);
+    if (data.cost) metadata.cost = String(data.cost);
+    if (data.service_fee) metadata.service_fee = String(data.service_fee);
+    if (data.total) metadata.total = String(data.total);
+    
+    sessionConfig.metadata = metadata;
+    
+    // Create the session
+    const session = await stripe.checkout.sessions.create(sessionConfig);
+    
+    // Log what we're sending back
+    console.log('Responding with Stripe session:', { id: session.id, url: session.url });
+    
+    // Send a well-structured response (matching the format expected by frontend)
+    return res.json({ 
+      url: session.url,
+      session_id: session.id,
+      status: 'success'
+    });
+  } catch (error) {
+    console.error('Error in bookings/create-checkout-session:', error);
+    
+    // Handle Stripe specific errors
+    if (error.type && error.type.startsWith('Stripe')) {
+      if (error.type === 'StripeInvalidRequestError') {
+        return res.status(400).json({ 
+          error: 'Invalid payment request',
+          details: error.message
+        });
+      }
+      
+      return res.status(500).json({ 
+        error: 'Payment processing error',
+        details: error.message
+      });
+    }
+    
+    // General error
+    return res.status(500).json({ 
+      error: 'Failed to initialize payment',
+      message: error.message
+    });
   }
 });
 
