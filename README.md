@@ -153,6 +153,38 @@ airbnb_backend/
 - **Content Security Policy**: Via Helmet
 - **CORS**: Configurable origins
 
+## Rate Limiting
+
+The application uses Redis for rate limiting in production (on Railway) with automatic fallback to in-memory storage if Redis is unavailable.
+
+### Setup Redis (Development)
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Redis is optional in development. The app will use in-memory rate limiting if Redis is not available.
+
+### Environment Variables
+
+Required in production (provided by Railway):
+
+```env
+REDIS_URL=redis://...
+```
+
+Optional configuration:
+
+```env
+RATE_LIMIT_WHITELIST=127.0.0.1,192.168.1.1
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX=100
+```
+
+See [REDIS-RAILWAY.md](REDIS-RAILWAY.md) for detailed Redis deployment instructions on Railway.
+
 ## Feature-Based Architecture
 
 The project follows a feature-based architecture where code is organized by business domain rather than technical role. Each feature directory contains everything needed for that feature.

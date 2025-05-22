@@ -1,12 +1,5 @@
 const rateLimit = require('express-rate-limit');
-const RedisStore = require('rate-limit-redis');
-const Redis = require('ioredis');
-
-// Initialize Redis client if REDIS_URL is available
-let redisClient;
-if (process.env.REDIS_URL) {
-  redisClient = new Redis(process.env.REDIS_URL);
-}
+const { redisStore, isRedisConnected } = require('../config/redis');
 
 // Create limiter with either Redis or memory store
 const createLimiter = (options) => {
@@ -30,12 +23,9 @@ const createLimiter = (options) => {
       return whitelistedIPs.includes(req.ip);
     }
   };
-
-  // Use Redis store if available
-  if (redisClient) {
-    config.store = new RedisStore({
-      sendCommand: (...args) => redisClient.call(...args)
-    });
+  // Use Redis store if available and connected
+  if (redisStore && isRedisConnected()) {
+    config.store = redisStore;
   }
 
   return rateLimit(config);
