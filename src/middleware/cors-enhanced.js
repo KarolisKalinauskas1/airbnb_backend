@@ -1,20 +1,32 @@
 // Enhanced CORS configuration middleware for app.js
 const corsMiddleware = (req, res, next) => {
-  // Parse the CORS_ORIGIN environment variable which can be a comma-separated list
-  const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map(o => o.trim()) || [
+  // Hard-coded list of allowed origins for production (make sure to include your current frontend URL)
+  const hardcodedOrigins = [
     'http://localhost:5173',
     'http://localhost:5174',
     'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
+    'https://airbnb-frontend-i8p5-6wqdroofv-karoliskalinauskas1s-projects.vercel.app', // Added the new Vercel domain
     'https://airbnb-frontend-gamma.vercel.app',
+    'https://airbnb-frontend-i8p5.vercel.app',
     'https://*.vercel.app'
   ];
+
+  // Parse the CORS_ORIGIN environment variable which can be a comma-separated list
+  const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map(o => o.trim()) || hardcodedOrigins;
 
   // Get the origin from the request
   const origin = req.headers.origin;
   
   console.log(`CORS check: Origin=${origin}, Allowed=${allowedOrigins.join(', ')}`);
   
-  // Handle preflight requests (OPTIONS)
+  // CRITICAL FIX: For production, just allow all origins temporarily to debug
+  if (process.env.NODE_ENV === 'production') {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-Token');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    return next();
+  }// Handle preflight requests (OPTIONS)
   if (req.method === 'OPTIONS') {
     // Set CORS headers for preflight requests
     res.header('Access-Control-Allow-Origin', origin || '*');

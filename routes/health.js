@@ -9,16 +9,10 @@ const prisma = new PrismaClient({
 
 // Basic health check that Railway uses
 router.get('/', async (req, res) => {
+    console.log('Health check endpoint called at', new Date().toISOString());
+    
     try {
-        // Quick connection test with a short timeout
-        const dbResult = await Promise.race([
-            prisma.$queryRaw`SELECT 1 as connected`,
-            new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Database timeout')), 3000)
-            )
-        ]);
-
-        // Simplified response for Railway
+        // Simple check without database to ensure the app is at least running
         res.json({ status: 'ok' });
     } catch (error) {
         console.error('Health check failed:', {

@@ -6,8 +6,9 @@ const helmet = require('helmet');
 const { paymentLimiter, authLimiter, apiLimiter } = require('./middleware/rate-limit');
 const PaymentService = require('./services/payment.service');
 
-// Import the enhanced CORS middleware
-const corsEnhanced = require('./middleware/cors-enhanced');
+// Import the CORS middleware options - we're using the simple one for debugging
+// const corsEnhanced = require('./middleware/cors-enhanced');
+const simpleCors = require('./middleware/simple-cors');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -21,9 +22,6 @@ const dashboardRoutes = require('./routes/dashboard');
 const healthRoutes = require('./routes/health');
 const amenitiesRoutes = require('./routes/amenities');
 
-// Import the enhanced CORS middleware
-const corsEnhanced = require('./middleware/cors-enhanced');
-
 // Create Express app
 const app = express();
 
@@ -33,29 +31,15 @@ app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Apply our enhanced CORS middleware before all other middleware
-app.use(corsEnhanced);
+// Apply our simple CORS middleware before all other middleware
+app.use(simpleCors);
 
 // Enhanced security middleware
 app.use(helmet({
-    contentSecurityPolicy: {
-        directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", 'https://js.stripe.com'],
-            styleSrc: ["'self'", "'unsafe-inline'"],
-            imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
-            connectSrc: ["'self'", 
-                process.env.SUPABASE_URL,
-                'https://api.stripe.com',
-                'https://js.stripe.com'
-            ],
-            frameSrc: ["'self'", 'https://js.stripe.com', 'https://hooks.stripe.com'],
-            formAction: ["'self'"],
-            upgradeInsecureRequests: []
-        }
-    },
-    crossOriginEmbedderPolicy: false, // Required for Stripe
-    crossOriginResourcePolicy: { policy: "cross-origin" }
+    contentSecurityPolicy: false, // Disable CSP for debugging
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: false
 }));
 
 // Remove the default CORS middleware since we're using our enhanced version
@@ -93,9 +77,21 @@ app.use('/api/auth', authLimiter);
 app.use('/api/checkout', paymentLimiter);
 app.use('/api', apiLimiter);
 
-// Add base route at app level for Railway health checks
+// Add base route at app level for Railway health checks - CRITICAL for deployment
 app.get('/health', (req, res) => {
+  console.log('Root health check endpoint called at', new Date().toISOString());
   res.status(200).json({ status: 'ok' });
+});
+
+// Also add API health endpoint directly to ensure it's working even if route mounting fails
+app.get('/api/health', (req, res) => {
+  console.log('API health check endpoint called at', new Date().toISOString());
+  res.status(200).json({ status: 'ok' });
+});
+
+// Add ping endpoint as a secondary health check
+app.get('/ping', (req, res) => {
+  res.status(200).json({ status: 'pong' });
 });
 
 // Mount routes
@@ -182,9 +178,50 @@ app.post('/api/checkout/create-session', paymentLimiter, async (req, res) => {
 
 // Error handling
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    // Log detailed error information
+    console.error('Application error:', {
+        path: req.path,
+        method: req.method,
+        error: err.message,
+        stack: err.stack,
+        timestamp: new Date().toISOString()
+    });
+    
+    // Handle specific error types
+    if (err.name === 'ValidationError') {
+        return res.status(400).json({
+            error: 'Validation Error',
+            message: err.message,
+            details: err.details || 'Invalid input data'
+        });
+    }
+    
+    if (err.name === 'PrismaClientKnownRequestError') {
+        return res.status(400).json({
+            error: 'Database Error',
+            message: 'Invalid data provided',
+            code: err.code
+        });
+    }
+    
+    if (err.name === 'PrismaClientInitializationError') {
+        return res.status(503).json({
+            error: 'Database Service Unavailable',
+            message: 'Database connection failed'
+        });
+    }
+    
+    if (err.name === 'JsonWebTokenError') {
+        return res.status(401).json({
+            error: 'Authentication Error',
+            message: 'Invalid authentication token'
+        });
+    }
+    
+    // Default error response with less information in production
     res.status(err.status || 500).json({
-        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+        error: err.name || 'Server Error',
+        message: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
     });
 });
 
