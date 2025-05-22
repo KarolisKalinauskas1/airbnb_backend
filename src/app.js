@@ -143,11 +143,17 @@ app.use('/api', (req, res, next) => {
   routeAccessMiddleware(req, res, next);
 });
 
-// Direct handler for the problematic endpoint
-app.post('/api/checkout/create-session', (req, res, next) => {
-  console.log('DIRECT HANDLER: Received request to /api/checkout/create-session, redirecting to bookings router');
-  // Let the route in the bookings router handle it
-  next();
+// Direct handler for the problematic endpoint - provide better forwarding
+app.post('/api/checkout/create-session', async (req, res, next) => {
+  // Forward silently without logs to reduce noise
+  // This is just a backup in case the router redirect doesn't work
+  try {
+    // Continue to the router's handler
+    next();
+  } catch (error) {
+    // If there's an error in the next middleware, fallback to direct response
+    return res.status(500).json({ error: 'Internal server error in checkout processing' });
+  }
 });
 
 // Mount routes after middleware

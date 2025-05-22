@@ -639,40 +639,43 @@ router.post('/create-checkout-session', async (req, res) => {
 
 // Handle the incorrect endpoint that the frontend is using
 router.post('/checkout/create-session', async (req, res) => {
-  console.log('Received request to incorrect endpoint /api/checkout/create-session, redirecting to correct endpoint');
+  // Silent processing (remove console logs to avoid noise)
   
   // Extract essential data from the request body
   let data = req.body;
   
-  // If the request has a nested 'booking' property (from PaymentView.vue), extract it
+  // Handle various ways the frontend might structure the data
   if (req.body.booking) {
     data = req.body.booking;
-    console.log('Extracted booking data from request:', JSON.stringify(data, null, 2));
-  } else {
-    console.log('Using direct request body data:', JSON.stringify(data, null, 2));
+  } else if (req.body.bookingData) {
+    data = req.body.bookingData;
   }
 
   // Format the request structure to match what the correct endpoint expects
   const bookingData = {
-    camper_id: data.camper_id,
-    user_id: data.user_id,
-    start_date: data.start_date,
-    end_date: data.end_date,
-    number_of_guests: data.number_of_guests,
-    cost: data.cost || data.base_price,
-    service_fee: data.service_fee || (data.total - data.base_price),
-    total: data.total,
-    spot_name: data.spot_name
+    camper_id: data.camper_id || data.camperId || data.camping_spot_id,
+    user_id: data.user_id || data.userId,
+    start_date: data.start_date || data.startDate,
+    end_date: data.end_date || data.endDate,
+    number_of_guests: data.number_of_guests || data.numberOfGuests || 1,
+    cost: data.cost || data.base_price || data.baseCost || data.basePrice || 0,
+    service_fee: data.service_fee || data.serviceFee || 0,
+    total: data.total || data.totalCost || data.totalAmount || 0,
+    spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
   };
 
-  console.log('Formatted data for Stripe:', JSON.stringify(bookingData, null, 2));
+  // If total is missing but we have cost, calculate it
+  if (!bookingData.total && bookingData.cost) {
+    const serviceFee = bookingData.service_fee || (bookingData.cost * 0.1);
+    bookingData.total = parseFloat(bookingData.cost) + parseFloat(serviceFee);
+    bookingData.service_fee = serviceFee;
+  }
   
-  // Validate minimum required fields
-  const requiredFields = ['camper_id', 'user_id', 'total'];
+  // Validate minimum required fields - camper_id and total are absolute minimum
+  const requiredFields = ['camper_id', 'total'];
   const missingFields = requiredFields.filter(field => !bookingData[field]);
   
   if (missingFields.length > 0) {
-    console.error('Missing required fields:', missingFields);
     return res.status(400).json({ 
       error: `Missing required fields: ${missingFields.join(', ')}`,
       received: bookingData
@@ -682,12 +685,9 @@ router.post('/checkout/create-session', async (req, res) => {
   try {
     // Ensure there's a valid Stripe API key
     if (!process.env.STRIPE_SECRET_KEY) {
-      console.error('STRIPE_SECRET_KEY is missing or invalid');
       return res.status(500).json({ error: 'Payment service configuration error' });
-    }
-
-    // Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
+    }    // Create a safer Stripe checkout session with minimal required data
+    const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
         {
@@ -703,42 +703,52 @@ router.post('/checkout/create-session', async (req, res) => {
       ],
       mode: 'payment',
       success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`,
-      metadata: {
-        camper_id: bookingData.camper_id,
-        user_id: bookingData.user_id,
-        start_date: bookingData.start_date,
-        end_date: bookingData.end_date,
-        number_of_guests: bookingData.number_of_guests,
-        cost: bookingData.cost,
-        service_fee: bookingData.service_fee,
-        total: bookingData.total
-      }
-    });
+      cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`
+    };
 
-    console.log('Successfully created Stripe session:', session.id);
-    return res.json({ url: session.url });
+    // Add metadata with validation
+    const safeMetadata = {};
+    
+    // Only include valid fields in metadata
+    if (bookingData.camper_id) safeMetadata.camper_id = String(bookingData.camper_id);
+    if (bookingData.user_id) safeMetadata.user_id = String(bookingData.user_id);
+    if (bookingData.start_date) safeMetadata.start_date = String(bookingData.start_date);
+    if (bookingData.end_date) safeMetadata.end_date = String(bookingData.end_date);
+    if (bookingData.number_of_guests) safeMetadata.number_of_guests = String(bookingData.number_of_guests);
+    if (bookingData.cost) safeMetadata.cost = String(bookingData.cost);
+    if (bookingData.service_fee) safeMetadata.service_fee = String(bookingData.service_fee);
+    if (bookingData.total) safeMetadata.total = String(bookingData.total);
+    
+    // Add metadata to session config
+    sessionConfig.metadata = safeMetadata;
+    
+    // Create the session
+    const session = await stripe.checkout.sessions.create(sessionConfig);    return res.json({ url: session.url });
   } catch (error) {
-    console.error('Error creating checkout session:', error);
+    // Handle error without logging to reduce noise
     
     // Add specific error handling for common Stripe issues
     if (error.type === 'StripeInvalidRequestError') {
-      console.error('Stripe invalid request:', error.message);
+      if (error.message.includes('valid integer')) {
+        // Most common error is the amount not being a valid integer
+        return res.status(400).json({ 
+          error: 'Invalid payment amount format',
+          details: error.message
+        });
+      }
       return res.status(400).json({ error: `Payment request error: ${error.message}` });
     }
     
     if (error.type === 'StripeAPIError') {
-      console.error('Stripe API error:', error.message);
       return res.status(503).json({ error: 'Payment service temporarily unavailable' });
     }
     
     if (error.type === 'StripeAuthenticationError') {
-      console.error('Stripe authentication error:', error.message);
       return res.status(500).json({ error: 'Payment authentication error' });
     }
     
     // Generic error response
-    return res.status(500).json({ error: 'Failed to process payment: ' + error.message });
+    return res.status(500).json({ error: 'Failed to process payment request' });
   }
 });
 
