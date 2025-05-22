@@ -41,15 +41,9 @@ async function ownerAccessCheck(req, res) {
   if (!req.user) {
     return { allowed: false, reason: 'Authentication required' };
   }
-  
-  // Owner check handling all possible value types
-  const isOwner = req.user.isowner === 1 || 
-                  req.user.isowner === '1' || 
-                  req.user.isowner === true ||
-                  req.user.isowner === 'true' ||
-                  req.user.isowner === 'yes' ||
-                  req.user.isowner === 'YES' ||
-                  Number(req.user.isowner) === 1;
+
+  // Check if user is owner - use string comparison
+  const isOwner = req.user.isowner === '1';
   
   if (!isOwner) {
     return { allowed: false, reason: 'Only owner accounts can view analytics' };

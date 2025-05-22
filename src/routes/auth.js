@@ -151,7 +151,7 @@ router.post('/register', async (req, res, next) => {
           full_name: full_name || email.split('@')[0],
           auth_user_id: data.user.id,
           verified: 'no',
-          isowner: is_seller ? '1' : '0',
+          isowner: is_seller ? '1' : '0', // Using string '1' or '0' for owner status
           created_at: new Date(),
           updated_at: new Date()
         }
@@ -180,7 +180,7 @@ router.post('/register', async (req, res, next) => {
         console.log('Setting up user session...');
         req.session.userId = user.user_id;
         req.session.email = user.email;
-        req.session.isowner = user.isowner;
+        req.session.isowner = user.isowner; // Will be '1' or '0'
         req.session.auth_user_id = user.auth_user_id;
         console.log('Session created successfully');
       } else {
@@ -196,7 +196,7 @@ router.post('/register', async (req, res, next) => {
           user_id: user.user_id,
           email: user.email,
           full_name: user.full_name,
-          isowner: Number(user.isowner) || 0
+          isowner: user.isowner // Will be '1' or '0'
         },
         session: req.session ? {
           userId: user.user_id,

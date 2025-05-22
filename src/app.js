@@ -84,6 +84,11 @@ app.use('/api/auth', authLimiter);
 app.use('/api/checkout', paymentLimiter);
 app.use('/api', apiLimiter);
 
+// Add base route at app level for Railway health checks
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
 // Mount routes
 app.use('/api/auth', authRoutes);
 app.use('/api/auth/oauth', authOauthRoutes);
@@ -95,6 +100,10 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/amenities', amenitiesRoutes);
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
 // Enhanced payment endpoint with detailed error handling
 app.post('/api/checkout/create-session', paymentLimiter, async (req, res) => {

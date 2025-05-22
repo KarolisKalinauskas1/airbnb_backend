@@ -474,11 +474,11 @@ model public_users {
   user_id      Int        @id @default(autoincrement())
   full_name    String     @db.VarChar(45)
   email        String     @unique @db.VarChar(45)
-  verified     String     @db.VarChar(45)
-  isowner      Decimal?   @db.Decimal
+  verified     String     @db.VarChar(45)  
+  isowner      String     @db.VarChar(1) @default("0")
   created_at   DateTime   @db.Date
   updated_at   DateTime   @db.Date
-  auth_user_id String?    @db.VarChar
+  auth_user_id String?    @db.VarChar(36)
   bookings     bookings[]
   review       review[]
 

@@ -23,37 +23,18 @@ const authRateLimiter = rateLimit({
  */
 const optionalAuthenticate = async (req, res, next) => {
   try {
-    // Get token from header
-    const authHeader = req.headers.authorization;
-    console.log('Optional Auth middleware - Authorization header:', authHeader ? 'Present' : 'Missing');
-    
-    // If no auth header, just continue without authentication
-    if (!authHeader) {
-      console.log('Optional Auth middleware - No authorization header, continuing as public access');
-      return next();
-    }
-
-    const token = authHeader.split(' ')[1];
-    
-    // If no token, just continue without authentication
-    if (!token) {
-      console.log('Optional Auth middleware - Invalid token format, continuing as public access');
-      return next();
-    }
-
     let user = null;
-    let decoded = null;
-
-    // Try verifying as JWT token
+    
+    // Get token from authorization header or session
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      if (decoded) {
-        // Get user from database using email from token
+      if (token) {
+        // Verify JWT token
+        const decoded = jwt.verify(token, jwtConfig.secret);
         const dbUser = await prisma.public_users.findUnique({
-          where: { 
-            email: decoded.email 
-          }
+          where: { user_id: decoded.sub }
         });
         
         if (dbUser) {
@@ -61,7 +42,7 @@ const optionalAuthenticate = async (req, res, next) => {
             user_id: dbUser.user_id,
             email: dbUser.email,
             full_name: dbUser.full_name,
-            isowner: dbUser.isowner
+            isowner: dbUser.isowner === '1' ? '1' : '0'
           };
           console.log('Optional Auth middleware - User found in database:', user.email);
         }
@@ -77,7 +58,7 @@ const optionalAuthenticate = async (req, res, next) => {
         user_id: user.user_id,
         email: user.email,
         full_name: user.full_name,
-        isowner: Number(user.isowner) || 0
+        isowner: user.isowner
       };
       console.log('Optional Auth middleware - Authentication successful for user:', req.user.email);
     } else {
@@ -179,14 +160,12 @@ const authenticate = async (req, res, next) => {
     if (!user) {
       console.error('Auth middleware - Authentication failed: User not found');
       return res.status(401).json({ error: 'Invalid token or user not found' });
-    }
-
-    // Attach user to request
+    }    // Attach user to request
     req.user = {
       user_id: user.user_id,
       email: user.email,
       full_name: user.full_name,
-      isowner: Number(user.isowner) || 0
+      isowner: user.isowner === '1' ? '1' : '0'
     };
     
     console.log('Auth middleware - Authentication successful for user:', req.user.email);

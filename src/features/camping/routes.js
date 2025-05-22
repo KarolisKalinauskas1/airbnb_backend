@@ -201,6 +201,7 @@ router.get('/:id', async (req, res) => {
       return res.status(400).json({ error: 'Invalid camping spot ID' });
     }
     
+    // Always allow GET requests to view camping spot details
     const campingSpot = await prisma.camping_spot.findUnique({
       where: {
         camping_spot_id: spotId

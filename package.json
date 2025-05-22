@@ -19,8 +19,9 @@
     "postinstall": "prisma generate --schema=./prisma/schema.prisma",
     "validate:env": "node scripts/validate-environment.js",
     "check:system": "node scripts/system-check.js",
+    "check:health": "node scripts/check-health.js",
     "prestart": "node -e \"process.env.SKIP_ENV_VALIDATION || require('./scripts/validate-environment.js')\"",
-    "predeploy": "npm run validate:env && npm run check:system"
+    "predeploy": "npm run validate:env && npm run check:system && npm run check:health"
   },
   "dependencies": {
     "@ioredis/commands": "^1.2.0",

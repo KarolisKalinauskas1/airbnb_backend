@@ -654,17 +654,14 @@ router.get('/owner', authenticate, async (req, res) => {
     }
     
     // Check if the user is an owner
-    const isOwner = req.user.isowner === 1 || 
-                    req.user.isowner === '1' || 
-                    req.user.isowner === true ||
-                    req.user.isowner === 'true';
-    
+    const isOwner = req.user.isowner === '1';
+
     console.log('Is owner check:', {
       isOwner,
       userIsOwner: req.user.isowner,
       userId: req.user.user_id
     });
-    
+
     if (!isOwner) {
       console.log('User is not an owner:', req.user);
       return res.status(403).json({ 

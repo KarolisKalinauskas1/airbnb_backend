@@ -341,7 +341,7 @@ router.put('/update-profile', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Full name is too long (max 100 characters)' });
     }
     
-    if (isowner !== undefined && ![0, 1].includes(parseInt(isowner))) {
+    if (isowner !== undefined && !['0', '1'].includes(isowner.toString())) {
       return res.status(400).json({ error: 'Invalid owner status (must be 0 or 1)' });
     }
     
@@ -350,7 +350,7 @@ router.put('/update-profile', authenticate, async (req, res) => {
       where: { user_id: userId },
       data: {
         full_name: full_name || req.user.full_name,
-        isowner: isowner !== undefined ? isowner : req.user.isowner,
+        isowner: isowner !== undefined ? isowner.toString() : req.user.isowner,
         updated_at: new Date()
       },
       select: {
@@ -365,7 +365,7 @@ router.put('/update-profile', authenticate, async (req, res) => {
     
     res.json({
       ...updatedUser,
-      isowner: parseInt(updatedUser.isowner)
+      isowner: updatedUser.isowner // Keep as string '1' or '0'
     });
   } catch (error) {
     console.error('Profile update error:', error);
