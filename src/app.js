@@ -146,57 +146,42 @@ app.use('/api', (req, res, next) => {
 
 // Direct handler for the problematic endpoint - provide better forwarding
 app.post('/api/checkout/create-session', async (req, res) => {
-  // Forward the request to the proper endpoint handler
   try {
     const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-    
-    // Extract essential data from the request body
-    let data = req.body;
-    
-    // Handle various ways the frontend might structure the data
-    if (req.body.booking) {
-      data = req.body.booking;
-    } else if (req.body.bookingData) {
-      data = req.body.bookingData;
-    }
+    const data = req.body;
+    console.log('Received booking checkout data:', JSON.stringify(data, null, 2));
 
-    // Debug what we received
-    console.log('Checkout endpoint received data:', JSON.stringify(data));
-
-    // Format the request structure to match what the correct endpoint expects
-    const bookingData = {
-      camper_id: data.camper_id || data.camping_spot_id || data.camperId,
-      user_id: data.user_id || data.userId,
-      start_date: data.start_date || data.startDate,
-      end_date: data.end_date || data.endDate,
-      number_of_guests: data.number_of_guests || data.numberOfGuests || data.guests,
-      cost: data.cost || data.baseAmount,
-      service_fee: data.service_fee || data.serviceFee || data.serviceFeeAmount,
-      total: data.total || data.totalAmount,
-      spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
-    };
-    
-    // Define required fields
-    const requiredFields = ['camper_id', 'total'];
-    
-    // Validate only crucial fields
-    const missingFields = requiredFields.filter(field => {
-      const isEmpty = !bookingData[field];
-      if (isEmpty) {
-        console.error(`Required field '${field}' is missing or empty. Value:`, bookingData[field]);
-      }
-      return isEmpty;
-    });
-    
-    if (missingFields.length > 0) {
-      console.error('Missing required fields:', missingFields);
+    // Get the camping spot ID from any of the possible field names
+    const camping_spot_id = data.camper_id || data.camping_spot_id || null;
+    if (!camping_spot_id) {
+      console.error('Missing camping spot ID. Received fields:', Object.keys(data));
       return res.status(400).json({ 
-        error: `Missing required fields: ${missingFields.join(', ')}`,
-        received: bookingData
+        error: 'Missing camping spot ID',
+        details: 'Please provide a valid camping spot ID using camper_id or camping_spot_id field'
       });
     }
-    
-    // Create session config
+
+    if (!data.total) {
+      return res.status(400).json({ 
+        error: 'Missing payment amount',
+        details: 'Please provide a valid payment amount'
+      });
+    }
+
+    // Normalize the data
+    const bookingData = {
+      camper_id: camping_spot_id.toString(),
+      user_id: (data.user_id || data.userId || '').toString(),
+      start_date: data.start_date || data.startDate || '',
+      end_date: data.end_date || data.endDate || '',
+      number_of_guests: parseInt(data.number_of_guests || data.numberOfGuests || data.guests || '1', 10),
+      cost: parseFloat(data.cost || data.baseAmount || '0'),
+      service_fee: parseFloat(data.service_fee || data.serviceFee || data.serviceFeeAmount || '0'),
+      total: parseFloat(data.total || data.totalAmount || '0'),
+      spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
+    };
+
+    // Session configuration
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
@@ -204,7 +189,7 @@ app.post('/api/checkout/create-session', async (req, res) => {
           price_data: {
             currency: 'eur',
             product_data: {
-              name: bookingData.spot_name || 'Camping Spot Booking',
+              name: bookingData.spot_name,
             },
             unit_amount: Math.round(bookingData.total * 100), // Convert to cents
           },
@@ -215,39 +200,23 @@ app.post('/api/checkout/create-session', async (req, res) => {
       success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`
     };
-    
-    // Add metadata with validation
-    const safeMetadata = {};
-    
-    // Only include valid fields in metadata
-    if (bookingData.camper_id) safeMetadata.camper_id = String(bookingData.camper_id);
-    if (bookingData.user_id) safeMetadata.user_id = String(bookingData.user_id);
-    if (bookingData.start_date) safeMetadata.start_date = String(bookingData.start_date);
-    if (bookingData.end_date) safeMetadata.end_date = String(bookingData.end_date);
-    if (bookingData.number_of_guests) safeMetadata.number_of_guests = String(bookingData.number_of_guests);
-    if (bookingData.cost) safeMetadata.cost = String(bookingData.cost);
-    if (bookingData.service_fee) safeMetadata.service_fee = String(bookingData.service_fee);
-    if (bookingData.total) safeMetadata.total = String(bookingData.total);
-    
-    // Add metadata to session config
-    sessionConfig.metadata = safeMetadata;
-    
-    // Create the session
-    const session = await stripe.checkout.sessions.create(sessionConfig);
-    
-    // Log what we're sending back to the client
-    console.log('Responding with Stripe session:', { id: session.id, url: session.url });
-    
-    // Send a clean, well-structured response (matching the format expected by frontend)
-    return res.json({ 
-      url: session.url,
-      session_id: session.id,
-      status: 'success'
+
+    // Add metadata with safety checks
+    sessionConfig.metadata = {};
+    Object.entries(bookingData).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        sessionConfig.metadata[key] = value.toString();
+      }
     });
-    
+
+    console.log('Creating Stripe session with config:', JSON.stringify(sessionConfig, null, 2));
+    const session = await stripe.checkout.sessions.create(sessionConfig);
+    console.log('Created Stripe session:', session.id);
+
+    res.json({ url: session.url });
   } catch (error) {
     console.error('Error in checkout/create-session:', error);
-    
+
     // Handle Stripe specific errors
     if (error.type && error.type.startsWith('Stripe')) {
       if (error.type === 'StripeInvalidRequestError') {
@@ -256,13 +225,12 @@ app.post('/api/checkout/create-session', async (req, res) => {
           details: error.message
         });
       }
-      
       return res.status(500).json({ 
         error: 'Payment processing error',
         details: error.message
       });
     }
-    
+
     // General error
     return res.status(500).json({ 
       error: 'Failed to initialize payment',
