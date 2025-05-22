@@ -23,6 +23,7 @@
     "predeploy": "npm run validate:env && npm run check:system"
   },
   "dependencies": {
+    "@ioredis/commands": "^1.2.0",
     "@prisma/client": "^5.0.0",
     "@supabase/supabase-js": "^2.49.4",
     "bcrypt": "^5.1.1",
@@ -30,6 +31,7 @@
     "cloudinary": "^2.6.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
+    "denque": "^2.1.0",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
@@ -40,6 +42,8 @@
     "ioredis": "^5.6.1",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^3.2.0",
+    "lodash.defaults": "^4.2.0",
+    "lodash.isarguments": "^3.1.0",
     "mailgun.js": "^9.4.1",
     "multer": "^1.4.5-lts.2",
     "natural": "^8.0.1",
@@ -47,6 +51,9 @@
     "node-nlp": "^5.0.0-alpha.5",
     "nodemailer": "^7.0.3",
     "rate-limit-redis": "^4.2.0",
+    "redis-errors": "^1.2.0",
+    "redis-parser": "^3.0.0",
+    "standard-as-callback": "^2.1.0",
     "stripe": "^18.0.0",
     "zod": "^3.22.4"
   },
