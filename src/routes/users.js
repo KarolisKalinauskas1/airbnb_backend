@@ -88,10 +88,20 @@ router.get('/full-info', async (req, res) => {
  */
 router.get('/me', async (req, res) => {
   try {
-    const userId = req.user.user_id;
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Get user ID and make sure it's a number
+    const userId = parseInt(req.user.user_id);
+    
+    if (isNaN(userId)) {
+      console.error('Invalid user_id format:', req.user.user_id);
+      return res.status(500).json({ error: 'Invalid user ID format' });
+    }
 
     const user = await prisma.public_users.findUnique({
-      where: { user_id: parseInt(userId) },
+      where: { user_id: userId },
       select: {
         user_id: true,
         full_name: true,
@@ -104,16 +114,23 @@ router.get('/me', async (req, res) => {
     });
 
     if (!user) {
+      console.error('User not found:', userId);
       return res.status(404).json({ error: 'User not found' });
     }
 
-    res.json({
+    // Format response data
+    const userData = {
       ...user,
-      isowner: Number(user.isowner) || 0
-    });
+      isowner: user.isowner === '1' ? '1' : '0' // Ensure consistent string format for isowner
+    };
+
+    res.json(userData);
   } catch (error) {
-    console.error('Error fetching user info:', error);
-    res.status(500).json({ error: 'Failed to fetch user information' });
+    console.error('Error fetching user:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'Error fetching user data'
+    });
   }
 });
 
