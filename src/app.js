@@ -144,13 +144,10 @@ app.use('/api', (req, res, next) => {
 });
 
 // Direct handler for the problematic endpoint
-app.post('/api/checkout/create-session', async (req, res) => {
-  console.log('DIRECT HANDLER: Received request to /api/checkout/create-session, redirecting to correct endpoint');
-  // Forward this request to the bookings router
-  req.url = '/api/bookings/create-checkout-session';
-  req.originalUrl = '/api/bookings/create-checkout-session';
-  // Next will pass control to the appropriate route handler
-  bookingRoutes(req, res);
+app.post('/api/checkout/create-session', (req, res, next) => {
+  console.log('DIRECT HANDLER: Received request to /api/checkout/create-session, redirecting to bookings router');
+  // Let the route in the bookings router handle it
+  next();
 });
 
 // Mount routes after middleware
