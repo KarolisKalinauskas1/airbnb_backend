@@ -8,8 +8,56 @@ const { authenticate } = require('../modules/auth/middleware/auth.middleware');
 const { geocodeAddress } = require('../../utils/geocoding');
 const axios = require('axios');
 
-// Configure multer for memory storage (for Cloudinary)
-const upload = multer({ storage: multer.memoryStorage() });
+// Configure multer with enhanced validation
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB limit
+        files: 10 // Maximum 10 files per upload
+    },
+    fileFilter: (req, file, cb) => {
+        // Check file type
+        if (!file.mimetype.startsWith('image/')) {
+            return cb(new ValidationError('Only image files are allowed'));
+        }
+
+        // Check file extension
+        const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
+        const ext = '.' + file.originalname.split('.').pop().toLowerCase();
+        if (!allowedExtensions.includes(ext)) {
+            return cb(new ValidationError(`Only ${allowedExtensions.join(', ')} files are allowed`));
+        }
+
+        // File is valid
+        cb(null, true);
+    }
+});
+
+// Error handler middleware for multer errors
+const handleMulterError = (err, req, res, next) => {
+    if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({
+                error: 'File too large',
+                message: 'Maximum file size is 5MB'
+            });
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+            return res.status(400).json({
+                error: 'Too many files',
+                message: 'Maximum 10 files can be uploaded at once'
+            });
+        }
+        return res.status(400).json({
+            error: 'File upload error',
+            message: err.message
+        });
+    }
+    next(err);
+};
+
+// Apply error handler to all routes that use upload
+router.use(handleMulterError);
 
 // Geocoding search endpoint
 router.get(['/geocoding/search', '/search'], async (req, res) => {

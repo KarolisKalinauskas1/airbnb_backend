@@ -4,6 +4,124 @@ const { authenticate } = require('../modules/auth/middleware/auth.middleware');
 const { prisma } = require('../config');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
+// Validation middleware for booking dates and guests
+const validateBooking = async (req, res, next) => {
+  try {
+    const { start_date, end_date, number_of_guests, camping_spot_id } = req.body;
+
+    // Basic validation
+    if (!start_date || !end_date || !number_of_guests || !camping_spot_id) {
+      return res.status(400).json({
+        error: 'Missing required fields',
+        details: 'All fields (start_date, end_date, number_of_guests, camping_spot_id) are required'
+      });
+    }
+
+    // Convert dates
+    const startDate = new Date(start_date);
+    const endDate = new Date(end_date);
+    const today = new Date();
+
+    // Date validation
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      return res.status(400).json({
+        error: 'Invalid date format',
+        details: 'Dates must be in ISO format (YYYY-MM-DD)'
+      });
+    }
+
+    if (startDate < today) {
+      return res.status(400).json({
+        error: 'Invalid start date',
+        details: 'Start date cannot be in the past'
+      });
+    }
+
+    if (endDate <= startDate) {
+      return res.status(400).json({
+        error: 'Invalid date range',
+        details: 'End date must be after start date'
+      });
+    }
+
+    if ((endDate - startDate) / (1000 * 60 * 60 * 24) > 30) {
+      return res.status(400).json({
+        error: 'Invalid booking duration',
+        details: 'Maximum booking duration is 30 days'
+      });
+    }
+
+    // Guest validation
+    const numGuests = parseInt(number_of_guests);
+    if (isNaN(numGuests) || numGuests < 1) {
+      return res.status(400).json({
+        error: 'Invalid number of guests',
+        details: 'Number of guests must be at least 1'
+      });
+    }
+
+    // Check camping spot capacity
+    const campingSpot = await prisma.camping_spot.findUnique({
+      where: { camping_spot_id: parseInt(camping_spot_id) },
+      select: { max_guests: true }
+    });
+
+    if (!campingSpot) {
+      return res.status(404).json({
+        error: 'Camping spot not found',
+        details: 'The requested camping spot does not exist'
+      });
+    }
+
+    if (numGuests > campingSpot.max_guests) {
+      return res.status(400).json({
+        error: 'Too many guests',
+        details: `This camping spot can only accommodate ${campingSpot.max_guests} guests`
+      });
+    }
+
+    // Check for overlapping bookings
+    const overlappingBooking = await prisma.booking.findFirst({
+      where: {
+        campingSpotId: parseInt(camping_spot_id),
+        OR: [
+          {
+            AND: [
+              { startDate: { lte: startDate } },
+              { endDate: { gte: startDate } }
+            ]
+          },
+          {
+            AND: [
+              { startDate: { lte: endDate } },
+              { endDate: { gte: endDate } }
+            ]
+          }
+        ]
+      }
+    });
+
+    if (overlappingBooking) {
+      return res.status(409).json({
+        error: 'Booking conflict',
+        details: 'The selected dates overlap with an existing booking'
+      });
+    }
+
+    // If all validations pass, attach validated data to request
+    req.validatedBooking = {
+      startDate,
+      endDate,
+      numGuests,
+      campingSpotId: parseInt(camping_spot_id)
+    };
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Public success route
 router.get('/success', async (req, res) => {
   try {
@@ -199,77 +317,99 @@ router.get('/:id', async (req, res) => {
 });
 
 // Create a new booking
-router.post('/', async (req, res) => {
+router.post('/', authenticate, validateBooking, async (req, res) => {
   try {
-    const { campingSpotId, startDate, endDate, numberOfGuests } = req.body;
+    const { startDate, endDate, numGuests, campingSpotId } = req.validatedBooking;
+    const userId = req.user.id;
 
-    // Check if the camping spot exists
-    const campingSpot = await prisma.campingSpot.findUnique({
-      where: { id: parseInt(campingSpotId) }
+    // Get the camping spot to calculate cost
+    const campingSpot = await prisma.camping_spot.findUnique({
+      where: { camping_spot_id: campingSpotId }
     });
 
-    if (!campingSpot) {
-      return res.status(404).json({ error: 'Camping spot not found' });
-    }
+    // Calculate booking duration in days
+    const durationMs = endDate - startDate;
+    const durationDays = Math.ceil(durationMs / (1000 * 60 * 60 * 24));
 
-    // Check if the dates are available
-    const existingBooking = await prisma.booking.findFirst({
-      where: {
-        campingSpotId: parseInt(campingSpotId),
-        OR: [
-          {
-            startDate: {
-              lte: new Date(endDate)
-            },
-            endDate: {
-              gte: new Date(startDate)
-            }
-          }
-        ]
-      }
-    });
+    // Calculate costs
+    const baseCost = campingSpot.price_per_night * durationDays;
+    const serviceFee = baseCost * 0.1; // 10% service fee
+    const totalCost = baseCost + serviceFee;
 
-    if (existingBooking) {
-      return res.status(400).json({ error: 'These dates are not available' });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
-    });
-
-    const booking = await prisma.booking.create({
-      data: {
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        numberOfGuests,
-        userId: user.id,
-        campingSpotId: parseInt(campingSpotId)
-      },
-      include: {
-        campingSpot: {
-          include: {
-            owner: {
-              select: {
-                id: true,
-                name: true,
-                email: true
+    // Create booking with transaction
+    const booking = await prisma.$transaction(async (tx) => {
+      // Create the booking
+      const newBooking = await tx.booking.create({
+        data: {
+          startDate,
+          endDate,
+          numberOfGuests: numGuests,
+          baseCost,
+          serviceFee,
+          totalCost,
+          status: 1, // Pending payment
+          userId,
+          campingSpotId
+        },
+        include: {
+          campingSpot: {
+            include: {
+              owner: {
+                select: {
+                  id: true,
+                  name: true,
+                  email: true
+                }
               }
             }
           }
         }
-      }
+      });
+
+      // Create a payment record
+      await tx.payment.create({
+        data: {
+          amount: totalCost,
+          status: 'pending',
+          bookingId: newBooking.id
+        }
+      });
+
+      return newBooking;
     });
 
-    res.status(201).json(booking);
+    res.status(201).json({ 
+      message: 'Booking created successfully',
+      booking 
+    });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    console.error('Error creating booking:', error);
+
+    if (error.code === 'P2002') {
+      return res.status(409).json({ 
+        error: 'Booking conflict',
+        message: 'A booking for these dates already exists'
+      });
+    }
+
+    if (error.code === 'P2003') {
+      return res.status(400).json({
+        error: 'Invalid reference',
+        message: 'The camping spot or user reference is invalid'
+      });
+    }
+
+    res.status(500).json({ 
+      error: 'Booking creation failed',
+      message: 'An unexpected error occurred while creating your booking'
+    });
   }
 });
 
 // Update a booking
-router.put('/:id', async (req, res) => {
+router.put('/:id', validateBooking, async (req, res) => {
   try {
-    const { startDate, endDate, numberOfGuests } = req.body;
+    const { startDate, endDate, numGuests } = req.validatedBooking;
 
     const user = await prisma.user.findUnique({
       where: { auth_user_id: req.user.id }
@@ -288,34 +428,12 @@ router.put('/:id', async (req, res) => {
       return res.status(403).json({ error: 'Not authorized to update this booking' });
     }
 
-    // Check if the new dates are available
-    const existingBooking = await prisma.booking.findFirst({
-      where: {
-        campingSpotId: booking.campingSpotId,
-        id: { not: booking.id },
-        OR: [
-          {
-            startDate: {
-              lte: new Date(endDate)
-            },
-            endDate: {
-              gte: new Date(startDate)
-            }
-          }
-        ]
-      }
-    });
-
-    if (existingBooking) {
-      return res.status(400).json({ error: 'These dates are not available' });
-    }
-
     const updatedBooking = await prisma.booking.update({
       where: { id: parseInt(req.params.id) },
       data: {
-        startDate: new Date(startDate),
-        endDate: new Date(endDate),
-        numberOfGuests
+        startDate,
+        endDate,
+        numberOfGuests: numGuests
       },
       include: {
         campingSpot: {

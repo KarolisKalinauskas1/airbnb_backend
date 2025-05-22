@@ -171,32 +171,88 @@ router.delete('/me', async (req, res, next) => {
       throw new ForbiddenError('Cannot delete account with active bookings');
     }
 
-    // Delete user's reviews
-    await prisma.review.deleteMany({
-      where: { userId: req.user.id }
+    // Use a transaction to ensure all deletions succeed or none do
+    await prisma.$transaction(async (tx) => {
+      // Delete user's reviews first (foreign key dependency)
+      await tx.review.deleteMany({
+        where: { userId: req.user.id }
+      });
+
+      // Delete user's bookings
+      await tx.booking.deleteMany({
+        where: { userId: req.user.id }
+      });
+
+      // If user is an owner, delete their camping spots and related data
+      if (req.user.isowner) {
+        // Find all camping spots to get their IDs
+        const spots = await tx.campingSpot.findMany({
+          where: { ownerId: req.user.id },
+          select: { id: true }
+        });
+
+        const spotIds = spots.map(spot => spot.id);
+
+        // Delete all related camping spot data
+        await Promise.all([
+          // Delete spot images
+          tx.campingSpotImage.deleteMany({
+            where: { campingSpotId: { in: spotIds } }
+          }),
+          // Delete spot amenities
+          tx.campingSpotAmenity.deleteMany({
+            where: { campingSpotId: { in: spotIds } }
+          }),
+          // Delete spot locations
+          tx.location.deleteMany({
+            where: { campingSpotId: { in: spotIds } }
+          })
+        ]);
+
+        // Finally delete the camping spots
+        await tx.campingSpot.deleteMany({
+          where: { ownerId: req.user.id }
+        });
+      }
+
+      // Delete user account last (foreign key dependency)
+      await tx.user.delete({
+        where: { id: req.user.id }
+      });
     });
 
-    // Delete user's bookings
-    await prisma.booking.deleteMany({
-      where: { userId: req.user.id }
+    res.json({ 
+      message: 'Account deleted successfully',
+      success: true
     });
-
-    // Delete user's camping spots if they are an owner
-    if (req.user.isowner) {
-      await prisma.campingSpot.deleteMany({
-        where: { ownerId: req.user.id }
+  } catch (error) {
+    console.error('Error deleting user account:', error);
+    
+    if (error instanceof ForbiddenError) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: error.message
       });
     }
 
-    // Delete user account
-    await prisma.user.delete({
-      where: { id: req.user.id }
-    });
+    // Handle transaction timeout
+    if (error.code === 'P2028') {
+      return res.status(408).json({
+        error: 'Transaction timeout',
+        message: 'Account deletion took too long, please try again'
+      });
+    }
 
-    res.json({ message: 'Account deleted successfully' });
-  } catch (error) {
+    // Handle transaction failures
+    if (error.code === 'P2034') {
+      return res.status(500).json({
+        error: 'Transaction failed',
+        message: 'Account deletion failed, please try again'
+      });
+    }
+
     next(error);
   }
 });
 
-module.exports = router; 
+module.exports = router;

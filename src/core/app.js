@@ -35,43 +35,54 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", 'data:', 'https:'],
-      connectSrc: ["'self'", 'https://api.example.com']
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", process.env.NODE_ENV === 'development' ? '*' : '']
     }
   },
-  crossOriginEmbedderPolicy: true,
-  crossOriginOpenerPolicy: true,
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  dnsPrefetchControl: true,
-  frameguard: { action: 'deny' },
-  hidePoweredBy: true,
-  hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
-  ieNoOpen: true,
-  noSniff: true,
-  originAgentCluster: true,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS configuration
+// Enhanced CORS configuration
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: (origin, callback) => {
     const allowedOrigins = [
+      process.env.FRONTEND_URL,
+      'http://localhost:3000',
       'http://localhost:5173',
-      'http://localhost:5174',
-      process.env.CORS_ORIGIN
-    ].filter(Boolean); // Remove undefined/null values
-    
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
+      'https://airbnb-frontend-gamma.vercel.app',
+      'https://*.vercel.app'
+    ].filter(Boolean);
+
+    if (!origin || allowedOrigins.some(allowed => {
+      if (allowed.includes('*')) {
+        const domain = allowed.replace('*', '.*');
+        return new RegExp(`^${domain}$`).test(origin);
+      }
+      return origin === allowed;
+    })) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error(`Origin ${origin} not allowed by CORS policy`));
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'X-CSRF-Token'
+  ],
+  exposedHeaders: ['Content-Range', 'X-Total-Count'],
+  credentials: true,
+  maxAge: 86400,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
 
 // Health check endpoints
@@ -130,21 +141,71 @@ app.use('/api/reviews', authenticate, reviewRoutes);
 app.use('/api/dashboard', authenticate, dashboardRoutes);
 
 // Error handling middleware
-app.use(errorHandler);
+app.use((err, req, res, next) => {
+  if (err) {
+    console.error('API Error:', {
+      path: req.path,
+      method: req.method,
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+
+    // Handle specific error types
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({
+        error: 'Validation Error',
+        message: err.message,
+        details: err.details
+      });
+    }
+
+    if (err.name === 'PrismaClientKnownRequestError') {
+      return res.status(400).json({
+        error: 'Database Error',
+        message: 'Invalid data provided',
+        code: err.code
+      });
+    }
+
+    if (err.name === 'PrismaClientInitializationError') {
+      return res.status(503).json({
+        error: 'Database Service Unavailable',
+        message: 'Database connection failed'
+      });
+    }
+
+    // Default error response
+    res.status(err.status || 500).json({
+      error: err.name || 'Server Error',
+      message: err.message || 'An unexpected error occurred',
+      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    });
+  }
+});
 
 // Handle 404 errors
-app.use((req, res, next) => {
-  res.status(404).json({ error: 'Not Found' });
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Not Found',
+    message: `${req.method} ${req.path} not found`,
+    suggestions: [
+      'Check the URL and try again',
+      'Refer to /api/docs for API documentation',
+      'Contact support if you believe this is a mistake'
+    ]
+  });
 });
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection:', error);
+  // Log to monitoring service in production
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
+  // Log to monitoring service before exiting
   process.exit(1);
 });
 

@@ -674,14 +674,13 @@ router.post('/checkout/create-session', async (req, res) => {
     }
     bookingData.total = cost + serviceFee;
     bookingData.service_fee = serviceFee;
-  }
-    // Validate all required fields for a booking
+  }    // Validate all required fields for a booking
   const requiredFields = ['camper_id', 'user_id', 'start_date', 'end_date', 'number_of_guests', 'total'];
-  const missingFields = requiredFields.filter(field => !bookingData[field]);
+  const missingFields = requiredFields.filter(field => bookingData[field] === undefined || bookingData[field] === null || bookingData[field] === '');
   
   if (missingFields.length > 0) {
     return res.status(400).json({ 
-      error: `Missing required fields: ${missingFields.join(', ')}`,
+      error: `Missing or empty required fields: ${missingFields.join(', ')}`,
       received: bookingData
     });
   }
@@ -692,19 +691,38 @@ router.post('/checkout/create-session', async (req, res) => {
     const startDate = new Date(bookingData.start_date);
     const endDate = new Date(bookingData.end_date);
     if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-      return res.status(400).json({ error: 'Invalid date format' });
+      return res.status(400).json({ error: 'Invalid date format for start_date or end_date' });
     }
     if (endDate <= startDate) {
       return res.status(400).json({ error: 'End date must be after start date' });
     }
     
+    // Validate camper_id and user_id
+    const camperId = parseInt(bookingData.camper_id);
+    const userId = parseInt(bookingData.user_id);
+    if (isNaN(camperId) || camperId <= 0) {
+      return res.status(400).json({ error: 'Invalid camper_id, must be a positive integer' });
+    }
+    if (isNaN(userId) || userId <= 0) {
+      return res.status(400).json({ error: 'Invalid user_id, must be a positive integer' });
+    }
+    
     // Validate numeric fields
-    if (typeof bookingData.total !== 'number' || bookingData.total <= 0) {
+    const total = parseFloat(bookingData.total);
+    const numGuests = parseInt(bookingData.number_of_guests);
+    
+    if (isNaN(total) || total <= 0) {
       return res.status(400).json({ error: 'Total must be a positive number' });
     }
-    if (!Number.isInteger(Number(bookingData.number_of_guests)) || Number(bookingData.number_of_guests) <= 0) {
+    if (isNaN(numGuests) || numGuests <= 0 || !Number.isInteger(numGuests)) {
       return res.status(400).json({ error: 'Number of guests must be a positive integer' });
     }
+    
+    // Update the values with the parsed numbers
+    bookingData.camper_id = camperId;
+    bookingData.user_id = userId;
+    bookingData.total = total;
+    bookingData.number_of_guests = numGuests;
   } catch (error) {
     return res.status(400).json({ error: 'Invalid data format', details: error.message });
   }

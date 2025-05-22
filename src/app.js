@@ -96,15 +96,68 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/amenities', amenitiesRoutes);
 
-// Enhanced payment endpoint
+// Enhanced payment endpoint with detailed error handling
 app.post('/api/checkout/create-session', paymentLimiter, async (req, res) => {
     try {
         const session = await PaymentService.createCheckoutSession(req.body);
         res.json(session);
     } catch (error) {
         console.error('Payment initialization error:', error);
-        res.status(error.status || 500).json({
-            error: error.message || 'Payment initialization failed'
+        
+        // Handle Stripe-specific errors
+        if (error.type === 'StripeCardError') {
+            return res.status(402).json({
+                error: 'Payment card error',
+                message: error.message,
+                code: error.code
+            });
+        }
+        
+        // Handle validation errors
+        if (error.type === 'StripeInvalidRequestError') {
+            return res.status(400).json({
+                error: 'Invalid payment request',
+                message: error.message,
+                param: error.param
+            });
+        }
+        
+        // Handle authentication errors
+        if (error.type === 'StripeAuthenticationError') {
+            return res.status(401).json({
+                error: 'Payment authentication failed',
+                message: 'Could not authenticate with payment provider'
+            });
+        }
+        
+        // Handle API connection errors
+        if (error.type === 'StripeAPIConnectionError') {
+            return res.status(503).json({
+                error: 'Payment service unavailable',
+                message: 'Could not connect to payment service'
+            });
+        }
+        
+        // Handle rate limiting
+        if (error.type === 'StripeRateLimitError') {
+            return res.status(429).json({
+                error: 'Too many payment requests',
+                message: 'Please try again in a few moments'
+            });
+        }
+        
+        // Handle any other Stripe errors
+        if (error.type?.startsWith('Stripe')) {
+            return res.status(400).json({
+                error: 'Payment processing error',
+                message: error.message
+            });
+        }
+        
+        // Handle internal server errors
+        res.status(500).json({
+            error: 'Payment initialization failed',
+            message: 'An unexpected error occurred while processing your payment'
         });
     }
 });

@@ -37,6 +37,7 @@
     "google-auth-library": "^9.15.1",
     "googleapis": "^148.0.0",
     "helmet": "^7.0.0",
+    "ioredis": "^5.6.1",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^3.2.0",
     "mailgun.js": "^9.4.1",
@@ -45,6 +46,7 @@
     "node-cron": "^3.0.3",
     "node-nlp": "^5.0.0-alpha.5",
     "nodemailer": "^7.0.3",
+    "rate-limit-redis": "^4.2.0",
     "stripe": "^18.0.0",
     "zod": "^3.22.4"
   },
