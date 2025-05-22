@@ -1,7 +1,9 @@
 {
   "name": "airbnb-backend",
   "version": "1.0.0",
-  "description": "Backend for Airbnb-like camping platform",  "main": "src/server.js",  "scripts": {
+  "description": "Backend for Airbnb-like camping platform",
+  "main": "src/server.js",
+  "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "jest",
@@ -10,17 +12,23 @@
     "prisma:studio": "prisma studio --schema=./prisma/schema.prisma",
     "prisma:deploy": "prisma migrate deploy --schema=./prisma/schema.prisma",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix",    "build": "npm run prisma:generate",
+    "lint:fix": "eslint . --fix",
+    "build": "npm run prisma:generate",
     "smoke-test": "node scripts/smoke-test.js",
     "railway": "node scripts/railway-healthcheck.js",
-    "postinstall": "prisma generate --schema=./prisma/schema.prisma"
+    "postinstall": "prisma generate --schema=./prisma/schema.prisma",
+    "validate:env": "node scripts/validate-environment.js",
+    "check:system": "node scripts/system-check.js",
+    "prestart": "npm run validate:env && npm run check:system",
+    "predeploy": "npm run validate:env && npm run check:system"
   },
   "dependencies": {
     "@prisma/client": "^5.0.0",
     "@supabase/supabase-js": "^2.49.4",
     "bcrypt": "^5.1.1",
     "bcryptjs": "^3.0.2",
-    "cloudinary": "^2.6.0",    "cookie-parser": "^1.4.6",
+    "cloudinary": "^2.6.0",
+    "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
     "express": "^4.18.2",
@@ -31,7 +39,8 @@
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.2",
     "jwks-rsa": "^3.2.0",
-    "mailgun.js": "^9.4.1",    "multer": "^1.4.5-lts.2",
+    "mailgun.js": "^9.4.1",
+    "multer": "^1.4.5-lts.2",
     "natural": "^8.0.1",
     "node-cron": "^3.0.3",
     "node-nlp": "^5.0.0-alpha.5",
