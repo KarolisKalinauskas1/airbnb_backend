@@ -164,74 +164,20 @@ app.post('/api/checkout/create-session', async (req, res) => {
     console.log('Checkout endpoint received data:', JSON.stringify(data));
 
     // Format the request structure to match what the correct endpoint expects
-    const bookingData = {};
+    const bookingData = {
+      camper_id: data.camper_id || data.camping_spot_id,
+      user_id: data.user_id,
+      start_date: data.start_date,
+      end_date: data.end_date,
+      number_of_guests: data.number_of_guests,
+      cost: data.cost,
+      service_fee: data.service_fee,
+      total: data.total,
+      spot_name: data.spot_name
+    };
     
-    // Enhanced extraction with nested property checks and more detailed logging
-    try {
-      // Extract camper_id from all possible locations with detailed logging
-      let camperId = null;
-      const possibleCamperIdSources = [
-        { path: 'camper_id', value: data.camper_id },
-        { path: 'camperId', value: data.camperId },
-        { path: 'camping_spot_id', value: data.camping_spot_id },
-        { path: 'spotId', value: data.spotId },
-        { path: 'spot.id', value: data.spot?.id },
-        { path: 'spot.camping_spot_id', value: data.spot?.camping_spot_id },
-        { path: 'campingSpot.camping_spot_id', value: data.campingSpot?.camping_spot_id },
-        { path: 'campingSpot.id', value: data.campingSpot?.id }
-      ];
-      
-      for (const source of possibleCamperIdSources) {
-        if (source.value) {
-          console.log(`Found camper_id in ${source.path}: ${source.value}`);
-          camperId = source.value;
-          break;
-        }
-      }
-      
-      if (!camperId && typeof data === 'object') {
-        console.log('No direct camper_id found, searching in nested properties');
-        // Additional search in nested objects
-        for (const key in data) {
-          if (typeof data[key] === 'object' && data[key] !== null) {
-            const nestedObj = data[key];
-            for (const subKey of ['camper_id', 'camperId', 'camping_spot_id', 'spotId', 'id']) {
-              if (nestedObj[subKey]) {
-                console.log(`Found camper_id in nested property ${key}.${subKey}: ${nestedObj[subKey]}`);
-                camperId = nestedObj[subKey];
-                break;
-              }
-            }
-            if (camperId) break;
-          }
-        }
-      }
-      
-      bookingData.camper_id = camperId;
-      
-      // Continue with other fields
-      bookingData.user_id = data.user_id || data.userId;
-      bookingData.start_date = data.start_date || data.startDate;
-      bookingData.end_date = data.end_date || data.endDate;
-      bookingData.number_of_guests = data.number_of_guests || data.numberOfGuests || data.guests || 1;
-      bookingData.cost = data.cost || data.base_price || data.baseCost || data.basePrice || 0;
-      bookingData.service_fee = data.service_fee || data.serviceFee || 0;
-      bookingData.total = data.total || data.totalCost || data.totalAmount || 0;
-      bookingData.spot_name = data.spot_name || data.spotName || data.title || data.spot?.name || data.spot?.title || 'Camping Spot Booking';
-    } catch (extractError) {
-      console.error('Error during data extraction:', extractError);
-    }
-
-    // If total is missing but we have cost, calculate it
-    if (!bookingData.total && bookingData.cost) {
-      const serviceFee = bookingData.service_fee || (bookingData.cost * 0.1);
-      bookingData.total = parseFloat(bookingData.cost) + parseFloat(serviceFee);
-      bookingData.service_fee = serviceFee;
-    }
-    
-    // Validate minimum required fields
-    const requiredFields = ['camper_id', 'total'];
-    const missingFields = requiredFields.filter(field => {
+    // Validate required fields to fail fast
+    const missingFields = Object.keys(bookingData).filter(field => {
       const isEmpty = !bookingData[field];
       if (isEmpty) {
         console.error(`Field '${field}' is missing or empty. Value:`, bookingData[field]);
@@ -240,20 +186,14 @@ app.post('/api/checkout/create-session', async (req, res) => {
     });
     
     if (missingFields.length > 0) {
-      console.error('Missing required fields:', missingFields, 'Data after processing:', JSON.stringify(bookingData), 'Original data:', JSON.stringify(data), 'Request body:', JSON.stringify(req.body));
+      console.error('Missing required fields:', missingFields);
       return res.status(400).json({ 
         error: `Missing required fields: ${missingFields.join(', ')}`,
-        received: bookingData,
-        original: {
-          bodyStructure: Object.keys(req.body),
-          dataType: typeof data,
-          hasBooking: !!req.body.booking,
-          hasBookingData: !!req.body.bookingData
-        }
+        received: bookingData
       });
     }
     
-    // Create a Stripe checkout session with minimal required data
+    // Create session config
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
@@ -272,7 +212,7 @@ app.post('/api/checkout/create-session', async (req, res) => {
       success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`
     };
-
+    
     // Add metadata with validation
     const safeMetadata = {};
     
@@ -293,14 +233,15 @@ app.post('/api/checkout/create-session', async (req, res) => {
     const session = await stripe.checkout.sessions.create(sessionConfig);
     
     // Log what we're sending back to the client
-    console.log('Responding with Stripe URL from direct handler:', session.url);
+    console.log('Responding with Stripe session:', { id: session.id, url: session.url });
     
-    // Send a clean, well-structured response
+    // Send a clean, well-structured response (matching the format expected by frontend)
     return res.json({ 
       url: session.url,
       session_id: session.id,
       status: 'success'
     });
+    
   } catch (error) {
     console.error('Error in checkout/create-session:', error);
     
