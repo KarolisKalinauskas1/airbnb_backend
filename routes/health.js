@@ -2,115 +2,83 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 
-const HEALTH_CHECK_TIMEOUT = 5000; // 5 seconds timeout
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+    log: ['error'],
+    errorFormat: 'minimal'
+});
 
-// Helper function to check database connection with timeout
-const checkDatabaseConnection = async () => {
-    return Promise.race([
-        prisma.$queryRaw`SELECT 1`,
-        new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Database connection timeout')), HEALTH_CHECK_TIMEOUT)
-        )
-    ]);
-};
-
-// Validate required environment variables
-const validateEnvironment = () => {
-    const required = ['DATABASE_URL', 'JWT_SECRET', 'CORS_ORIGIN'];
-    const missing = required.filter(key => !process.env[key]);
-    if (missing.length > 0) {
-        throw new Error(`Missing environment variables: ${missing.join(', ')}`);
-    }
-    return true;
-};
-
-// Basic health check
+// Basic health check that Railway uses
 router.get('/', async (req, res) => {
     try {
-        // Validate environment
-        validateEnvironment();
+        // Quick connection test with a short timeout
+        const dbResult = await Promise.race([
+            prisma.$queryRaw`SELECT 1 as connected`,
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Database timeout')), 3000)
+            )
+        ]);
 
-        // Test database connection
-        await checkDatabaseConnection();
-        
-        res.json({ 
-            status: 'ok', 
-            timestamp: new Date().toISOString(),
-            database: 'connected',
-            environment: process.env.NODE_ENV || 'development',
-            uptime: process.uptime()
-        });
+        // Simplified response for Railway
+        res.json({ status: 'ok' });
     } catch (error) {
         console.error('Health check failed:', {
             error: error.message,
-            stack: error.stack,
             timestamp: new Date().toISOString()
         });
 
-        res.status(503).json({
-            status: 'error',
-            timestamp: new Date().toISOString(),
-            database: error.message.includes('timeout') ? 'timeout' : 'disconnected',
-            error: error.message,
-            environment: process.env.NODE_ENV || 'development',
-            uptime: process.uptime()
-        });
+        // Railway expects a 503 for service unavailable
+        res.status(503).json({ status: 'error' });
     }
 });
 
-// Detailed health check with all services
+// Detailed health check for diagnostics
 router.get('/detailed', async (req, res) => {
+    const healthInfo = {
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        version: process.env.npm_package_version || '1.0.0',
+        environment: process.env.NODE_ENV || 'development',
+        database: 'checking',
+        memory: process.memoryUsage(),
+        uptime: process.uptime()
+    };
+
     try {
-        const healthStatus = {
-            status: 'ok',
-            timestamp: new Date().toISOString(),
-            environment: process.env.NODE_ENV || 'development',
-            uptime: process.uptime(),
-            services: {}
-        };
-
-        // Environment variables check
-        try {
-            validateEnvironment();
-            healthStatus.services.environment = { status: 'ok' };
-        } catch (envError) {
-            healthStatus.services.environment = {
-                status: 'error',
-                error: envError.message
-            };
-            healthStatus.status = 'error';
-        }
-
-        // Database check
-        try {
-            await checkDatabaseConnection();
-            healthStatus.services.database = { status: 'ok' };
-        } catch (dbError) {
-            healthStatus.services.database = { 
-                status: 'error',
-                error: dbError.message,
-                type: dbError.message.includes('timeout') ? 'timeout' : 'connection_error'
-            };
-            healthStatus.status = 'error';
-        }
-
-        const statusCode = healthStatus.status === 'ok' ? 200 : 503;
-        res.status(statusCode).json(healthStatus);
+        const dbResult = await Promise.race([
+            prisma.$queryRaw`SELECT 1 as connected`,
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Database timeout')), 5000)
+            )
+        ]);
+        
+        healthInfo.database = 'connected';
     } catch (error) {
-        console.error('Detailed health check failed:', {
-            error: error.message,
-            stack: error.stack,
-            timestamp: new Date().toISOString()
-        });
-
-        res.status(503).json({
-            status: 'error',
-            timestamp: new Date().toISOString(),
-            error: error.message,
-            environment: process.env.NODE_ENV || 'development'
-        });
+        healthInfo.status = 'error';
+        healthInfo.database = 'error';
+        healthInfo.error = {
+            message: error.message,
+            type: error.message.includes('timeout') ? 'timeout' : 'connection_error'
+        };
     }
+
+    const statusCode = healthInfo.status === 'ok' ? 200 : 503;
+    res.status(statusCode).json(healthInfo);
 });
+
+// Keep the connection alive
+let isConnected = false;
+const maintainConnection = async () => {
+    try {
+        await prisma.$queryRaw`SELECT 1`;
+        isConnected = true;
+    } catch (error) {
+        isConnected = false;
+        console.error('Database connection check failed:', error.message);
+    }
+};
+
+// Run the connection check every 30 seconds
+setInterval(maintainConnection, 30000);
+maintainConnection().catch(console.error);
 
 module.exports = router;

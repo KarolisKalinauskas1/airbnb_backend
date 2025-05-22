@@ -79,6 +79,8 @@ const publicPatterns = [
   /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|update\-password|refresh\-token)(\?.*)?$/,  // Auth routes with parameters
   /^\/?(api\/)?auth\/oauth\/google\/(login|callback|supabase-callback)(\?.*)?$/, // OAuth Google routes with parameters
   /^\/social-auth-success(\?.*)?$/, // Social auth success page with any query parameters
+  /^\/?(api\/)?camping-spots\/\d+(\/?)?$/, // Individual camping spot details
+  /^\/?(api\/)?camping-spots\/\d+\/reviews(\/?)?$/, // Individual camping spot reviews
   // Note: We now handle camping-spots separately based on HTTP method below
   /^\/?(api\/)?camping-spots\/geocoding\/search(\?.*)?$/, // Allow geocoding search
   /^\/?(api\/)?geocoding\/search(\?.*)?$/, // Allow direct geocoding search

@@ -46,6 +46,7 @@ COPY --from=builder /app/src/middleware ./src/middleware
 COPY --from=builder /app/routes ./routes
 COPY --from=builder /app/schemas ./schemas
 COPY --from=builder /app/utils ./utils
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/server.js ./server.js
 COPY --from=builder /app/vercel-server.js ./vercel-server.js

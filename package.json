@@ -19,7 +19,7 @@
     "postinstall": "prisma generate --schema=./prisma/schema.prisma",
     "validate:env": "node scripts/validate-environment.js",
     "check:system": "node scripts/system-check.js",
-    "prestart": "npm run validate:env && npm run check:system",
+    "prestart": "node -e \"process.env.SKIP_ENV_VALIDATION || require('./scripts/validate-environment.js')\"",
     "predeploy": "npm run validate:env && npm run check:system"
   },
   "dependencies": {

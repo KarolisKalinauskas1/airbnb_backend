@@ -662,17 +662,21 @@ router.post('/checkout/create-session', async (req, res) => {
     service_fee: data.service_fee || data.serviceFee || 0,
     total: data.total || data.totalCost || data.totalAmount || 0,
     spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
-  };
-
-  // If total is missing but we have cost, calculate it
+  };    // If total is missing but we have cost, calculate it
   if (!bookingData.total && bookingData.cost) {
-    const serviceFee = bookingData.service_fee || (bookingData.cost * 0.1);
-    bookingData.total = parseFloat(bookingData.cost) + parseFloat(serviceFee);
+    const cost = parseFloat(bookingData.cost);
+    if (isNaN(cost) || cost <= 0) {
+      return res.status(400).json({ error: 'Invalid cost amount' });
+    }
+    const serviceFee = bookingData.service_fee ? parseFloat(bookingData.service_fee) : (cost * 0.1);
+    if (isNaN(serviceFee) || serviceFee < 0) {
+      return res.status(400).json({ error: 'Invalid service fee amount' });
+    }
+    bookingData.total = cost + serviceFee;
     bookingData.service_fee = serviceFee;
   }
-  
-  // Validate minimum required fields - camper_id and total are absolute minimum
-  const requiredFields = ['camper_id', 'total'];
+    // Validate all required fields for a booking
+  const requiredFields = ['camper_id', 'user_id', 'start_date', 'end_date', 'number_of_guests', 'total'];
   const missingFields = requiredFields.filter(field => !bookingData[field]);
   
   if (missingFields.length > 0) {
@@ -680,6 +684,29 @@ router.post('/checkout/create-session', async (req, res) => {
       error: `Missing required fields: ${missingFields.join(', ')}`,
       received: bookingData
     });
+  }
+  
+  // Validate data types and values
+  try {
+    // Validate dates
+    const startDate = new Date(bookingData.start_date);
+    const endDate = new Date(bookingData.end_date);
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format' });
+    }
+    if (endDate <= startDate) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+    
+    // Validate numeric fields
+    if (typeof bookingData.total !== 'number' || bookingData.total <= 0) {
+      return res.status(400).json({ error: 'Total must be a positive number' });
+    }
+    if (!Number.isInteger(Number(bookingData.number_of_guests)) || Number(bookingData.number_of_guests) <= 0) {
+      return res.status(400).json({ error: 'Number of guests must be a positive integer' });
+    }
+  } catch (error) {
+    return res.status(400).json({ error: 'Invalid data format', details: error.message });
   }
   
   try {    // Ensure there's a valid Stripe API key
