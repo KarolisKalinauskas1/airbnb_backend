@@ -165,22 +165,25 @@ app.post('/api/checkout/create-session', async (req, res) => {
 
     // Format the request structure to match what the correct endpoint expects
     const bookingData = {
-      camper_id: data.camper_id || data.camping_spot_id,
-      user_id: data.user_id,
-      start_date: data.start_date,
-      end_date: data.end_date,
-      number_of_guests: data.number_of_guests,
-      cost: data.cost,
-      service_fee: data.service_fee,
-      total: data.total,
-      spot_name: data.spot_name
+      camper_id: data.camper_id || data.camping_spot_id || data.camperId,
+      user_id: data.user_id || data.userId,
+      start_date: data.start_date || data.startDate,
+      end_date: data.end_date || data.endDate,
+      number_of_guests: data.number_of_guests || data.numberOfGuests || data.guests,
+      cost: data.cost || data.baseAmount,
+      service_fee: data.service_fee || data.serviceFee || data.serviceFeeAmount,
+      total: data.total || data.totalAmount,
+      spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
     };
     
-    // Validate required fields to fail fast
-    const missingFields = Object.keys(bookingData).filter(field => {
+    // Define required fields
+    const requiredFields = ['camper_id', 'total'];
+    
+    // Validate only crucial fields
+    const missingFields = requiredFields.filter(field => {
       const isEmpty = !bookingData[field];
       if (isEmpty) {
-        console.error(`Field '${field}' is missing or empty. Value:`, bookingData[field]);
+        console.error(`Required field '${field}' is missing or empty. Value:`, bookingData[field]);
       }
       return isEmpty;
     });
