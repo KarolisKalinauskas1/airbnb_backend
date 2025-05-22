@@ -151,6 +151,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/geocoding', campingSpotsRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/checkout', bookingRoutes); // Add alias for incorrect frontend path
 app.use('/api/amenities', amenitiesRoutes);
 // Make reviews publicly accessible without authentication
 app.use('/api/reviews', reviewRoutes);  

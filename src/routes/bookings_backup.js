@@ -637,69 +637,6 @@ router.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// Handle the incorrect endpoint that the frontend is using
-router.post('/checkout/create-session', async (req, res) => {
-  console.log('Received request to incorrect endpoint /api/checkout/create-session, forwarding to correct endpoint');
-  
-  try {
-    // Forward the request to the correct endpoint
-    const {
-      camper_id,
-      user_id,
-      start_date,
-      end_date,
-      number_of_guests,
-      cost,
-      service_fee,
-      total,
-      spot_name
-    } = req.body;
-
-    // Get the auth token from the request
-    const authToken = req.headers.authorization?.replace('Bearer ', '');
-    
-    // Create Stripe checkout session with minimal metadata
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'eur',
-            product_data: {
-              name: spot_name || 'Camping Spot Booking',
-            },
-            unit_amount: Math.round(total * 100), // Convert to cents
-          },
-          quantity: 1,
-        },
-      ],
-      mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/campers/${camper_id}`,
-      metadata: {
-        camper_id,
-        user_id,
-        start_date,
-        end_date,
-        number_of_guests,
-        cost,
-        service_fee,
-        total
-      }
-    });
-
-    console.log('Created Stripe session via redirected endpoint:', session.id);
-    
-    res.json({ url: session.url });
-  } catch (error) {
-    console.error('Error creating checkout session via redirected endpoint:', error);
-    if (error.type === 'StripeInvalidRequestError') {
-      return res.status(400).json({ error: 'Invalid payment request' });
-    }
-    res.status(500).json({ error: 'Failed to create checkout session' });
-  }
-});
-
 // Update booking status
 router.put('/:id/status', async (req, res) => {
   try {
