@@ -144,15 +144,116 @@ app.use('/api', (req, res, next) => {
 });
 
 // Direct handler for the problematic endpoint - provide better forwarding
-app.post('/api/checkout/create-session', async (req, res, next) => {
-  // Forward silently without logs to reduce noise
-  // This is just a backup in case the router redirect doesn't work
+app.post('/api/checkout/create-session', async (req, res) => {
+  // Forward the request to the proper endpoint handler
   try {
-    // Continue to the router's handler
-    next();
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    
+    // Extract essential data from the request body
+    let data = req.body;
+    
+    // Handle various ways the frontend might structure the data
+    if (req.body.booking) {
+      data = req.body.booking;
+    } else if (req.body.bookingData) {
+      data = req.body.bookingData;
+    }
+
+    // Format the request structure to match what the correct endpoint expects
+    const bookingData = {
+      camper_id: data.camper_id || data.camperId || data.camping_spot_id,
+      user_id: data.user_id || data.userId,
+      start_date: data.start_date || data.startDate,
+      end_date: data.end_date || data.endDate,
+      number_of_guests: data.number_of_guests || data.numberOfGuests || 1,
+      cost: data.cost || data.base_price || data.baseCost || data.basePrice || 0,
+      service_fee: data.service_fee || data.serviceFee || 0,
+      total: data.total || data.totalCost || data.totalAmount || 0,
+      spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
+    };
+
+    // If total is missing but we have cost, calculate it
+    if (!bookingData.total && bookingData.cost) {
+      const serviceFee = bookingData.service_fee || (bookingData.cost * 0.1);
+      bookingData.total = parseFloat(bookingData.cost) + parseFloat(serviceFee);
+      bookingData.service_fee = serviceFee;
+    }
+    
+    // Validate minimum required fields
+    const requiredFields = ['camper_id', 'total'];
+    const missingFields = requiredFields.filter(field => !bookingData[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({ 
+        error: `Missing required fields: ${missingFields.join(', ')}`,
+        received: bookingData
+      });
+    }
+    
+    // Create a Stripe checkout session with minimal required data
+    const sessionConfig = {
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'eur',
+            product_data: {
+              name: bookingData.spot_name || 'Camping Spot Booking',
+            },
+            unit_amount: Math.round(bookingData.total * 100), // Convert to cents
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`
+    };
+
+    // Add metadata with validation
+    const safeMetadata = {};
+    
+    // Only include valid fields in metadata
+    if (bookingData.camper_id) safeMetadata.camper_id = String(bookingData.camper_id);
+    if (bookingData.user_id) safeMetadata.user_id = String(bookingData.user_id);
+    if (bookingData.start_date) safeMetadata.start_date = String(bookingData.start_date);
+    if (bookingData.end_date) safeMetadata.end_date = String(bookingData.end_date);
+    if (bookingData.number_of_guests) safeMetadata.number_of_guests = String(bookingData.number_of_guests);
+    if (bookingData.cost) safeMetadata.cost = String(bookingData.cost);
+    if (bookingData.service_fee) safeMetadata.service_fee = String(bookingData.service_fee);
+    if (bookingData.total) safeMetadata.total = String(bookingData.total);
+    
+    // Add metadata to session config
+    sessionConfig.metadata = safeMetadata;
+    
+    // Create the session
+    const session = await stripe.checkout.sessions.create(sessionConfig);
+    
+    // Return the session URL
+    return res.json({ url: session.url });
   } catch (error) {
-    // If there's an error in the next middleware, fallback to direct response
-    return res.status(500).json({ error: 'Internal server error in checkout processing' });
+    // Add specific error handling for common Stripe issues
+    if (error.type === 'StripeInvalidRequestError') {
+      if (error.message.includes('valid integer')) {
+        // Most common error is the amount not being a valid integer
+        return res.status(400).json({ 
+          error: 'Invalid payment amount format',
+          details: error.message
+        });
+      }
+      return res.status(400).json({ error: `Payment request error: ${error.message}` });
+    }
+    
+    if (error.type === 'StripeAPIError') {
+      return res.status(503).json({ error: 'Payment service temporarily unavailable' });
+    }
+    
+    if (error.type === 'StripeAuthenticationError') {
+      return res.status(500).json({ error: 'Payment authentication error' });
+    }
+    
+    // Generic error response
+    return res.status(500).json({ error: 'Failed to process payment request' });
   }
 });
 
@@ -164,7 +265,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/geocoding', campingSpotsRoutes);
 app.use('/api/bookings', bookingRoutes);
-app.use('/api/checkout', bookingRoutes); // Add alias for incorrect frontend path
+// Do not register bookingRoutes under /api/checkout since we handle the specific endpoint directly above
 app.use('/api/amenities', amenitiesRoutes);
 // Make reviews publicly accessible without authentication
 app.use('/api/reviews', reviewRoutes);  
