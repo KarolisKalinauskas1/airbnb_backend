@@ -3,19 +3,52 @@ const prisma = require('../config/prisma');
 const { createClient } = require('@supabase/supabase-js');
 const jwt = require('jsonwebtoken');
 
+// Ensure JWT secret is properly set
+if (!process.env.JWT_SECRET) {
+  console.error('JWT_SECRET is not set. This is a critical security issue.');
+  process.exit(1);
+}
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
 
-// Rate limit settings for auth endpoints
-const authRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minute window
-  max: 100, // Limit each IP to 100 requests per windowMs
+// Enhanced rate limiting configuration
+const createRateLimiter = (windowMs, max, message) => rateLimit({
+  windowMs,
+  max,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many authentication attempts, please try again later' }
+  message: { error: message },
+  skip: (req) => process.env.NODE_ENV === 'development',
+  keyGenerator: (req) => {
+    // Use X-Forwarded-For if available (for proxy support)
+    return req.headers['x-forwarded-for'] || req.ip;
+  }
 });
+
+// Different rate limits for different endpoints
+const authRateLimiter = createRateLimiter(
+  15 * 60 * 1000, // 15 minutes
+  100, // 100 requests
+  'Too many authentication attempts, please try again later'
+);
+
+const loginRateLimiter = createRateLimiter(
+  60 * 60 * 1000, // 1 hour
+  5, // 5 failed attempts
+  'Too many failed login attempts, please try again later'
+);
+
+const passwordResetLimiter = createRateLimiter(
+  60 * 60 * 1000, // 1 hour
+  3, // 3 attempts
+  'Too many password reset attempts, please try again later'
+);
+
+// Token blacklist (for logged out tokens)
+const tokenBlacklist = new Set();
 
 /**
  * Optional authentication middleware - doesn't require authentication
@@ -43,6 +76,12 @@ const optionalAuthenticate = async (req, res, next) => {
 
     let user = null;
     let decoded = null;
+
+    // Check if token is blacklisted
+    if (tokenBlacklist.has(token)) {
+      console.log('Optional Auth middleware - Token is blacklisted, continuing as public access');
+      return next();
+    }
 
     // Try verifying as JWT token
     try {
@@ -116,6 +155,12 @@ const authenticate = async (req, res, next) => {
 
     let user = null;
     let decoded = null;
+
+    // Check if token is blacklisted
+    if (tokenBlacklist.has(token)) {
+      console.error('Auth middleware - Token is blacklisted');
+      return res.status(401).json({ error: 'Token is invalid or has been revoked' });
+    }
 
     // Try verifying as JWT token
     try {
@@ -200,5 +245,7 @@ const authenticate = async (req, res, next) => {
 module.exports = {
   authenticate,
   authRateLimiter,
-  optionalAuthenticate
+  optionalAuthenticate,
+  loginRateLimiter,
+  passwordResetLimiter
 };

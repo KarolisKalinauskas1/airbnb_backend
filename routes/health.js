@@ -1,87 +1,25 @@
 const express = require('express');
 const router = express.Router();
+const ServiceHealthCheck = require('../src/utils/service-health');
 
-// Cache health check results to reduce database load
-let healthCache = {
-  status: 'ok',
-  timestamp: new Date().toISOString(),
-  dbConnected: false,
-  lastCheck: 0
-};
-
-// Only check database every 30 seconds at most
-const MIN_CHECK_INTERVAL = 30000;
-
-/**
- * Simple health check endpoint that doesn't rely on database
- */
-router.get('/', async (req, res) => {
-  const now = Date.now();
-  
-  // Always return at least a basic health response
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    server: true
-  });
+// Basic health check
+router.get('/', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-/**
- * Detailed health check with database check
- */
+// Detailed health check with all services
 router.get('/detailed', async (req, res) => {
-  const now = Date.now();
-  const timeSinceLastCheck = now - healthCache.lastCheck;
-  
-  // Check if we need to refresh the cache
-  if (timeSinceLastCheck > MIN_CHECK_INTERVAL) {
     try {
-      // Only try database check if module is available
-      let dbConnected = false;
-      
-      try {
-        const { PrismaClient } = require('@prisma/client');
-        const prisma = new PrismaClient();
-        // Simple query to test database connectivity
-        await prisma.$queryRaw`SELECT 1 as result`;
-        await prisma.$disconnect();
-        dbConnected = true;
-      } catch (dbError) {
-        console.warn('Health check database connection failed:', dbError.message);
-        dbConnected = false;
-      }
-      
-      // Update cache with successful result
-      healthCache = {
-        status: dbConnected ? 'ok' : 'degraded',
-        timestamp: new Date().toISOString(),
-        dbConnected,
-        lastCheck: now
-      };
+        const healthStatus = await ServiceHealthCheck.checkAllServices();
+        const statusCode = healthStatus.healthy ? 200 : 503;
+        res.status(statusCode).json(healthStatus);
     } catch (error) {
-      console.warn('Health check error:', error.message);
-      
-      // Update cache with error result
-      healthCache = {
-        status: 'degraded',
-        timestamp: new Date().toISOString(),
-        dbConnected: false,
-        lastCheck: now,
-        error: 'System error'
-      };
+        res.status(500).json({
+            status: 'error',
+            timestamp: new Date().toISOString(),
+            error: error.message
+        });
     }
-  }
-  
-  // Always return the cached result
-  res.json(healthCache);
-});
-
-// Add ping endpoint for simple connectivity checks
-router.get('/ping', (req, res) => {
-  res.json({ 
-    pong: true,
-    timestamp: new Date().toISOString()
-  });
 });
 
 module.exports = router;

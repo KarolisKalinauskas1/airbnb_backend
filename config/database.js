@@ -27,37 +27,63 @@ class DatabaseService extends EventEmitter {
       console.error('   Please check your .env file and ensure DATABASE_URL is set correctly');
       return;
     }
-    
-    // Check if using port 5432 (which might be blocked)
-    if (process.env.DATABASE_URL?.includes(':5432/')) {
-      console.log('⚠️ Your DATABASE_URL is using port 5432, which might be blocked.');
-      console.log('   If you have connection issues, try one of these solutions:');
-      console.log('   1. Run: npm run network-test (to diagnose issues)');
-      console.log('   2. Connect using a mobile hotspot to bypass network restrictions');
-      console.log('   3. Try alternative ports like 6543 or 5433 in your DATABASE_URL');
-    }
-    
+
     // Try to create Prisma client with error handling
     try {
       this.prisma = new PrismaClient({
         log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
         errorFormat: 'pretty',
-        // Explicitly set from environment variable to ensure it's the latest value
         datasources: {
           db: {
             url: process.env.DATABASE_URL
           }
+        },
+        // Add connection pooling configuration
+        connection: {
+          pool: {
+            min: 2,
+            max: 10,
+            idleTimeoutMillis: 60000,
+            acquireTimeoutMillis: 60000
+          }
+        },
+        // Add query logging in development
+        __internal: {
+          engine: {
+            queryLogging: process.env.NODE_ENV === 'development'
+          }
         }
       });
+
+      // Create singleton instance
+      if (!global.__prisma) {
+        global.__prisma = this.prisma;
+      }
       
-      console.log('Database client initialized');
+      console.log('Database client initialized with connection pooling');
     } catch (error) {
       console.error('Failed to initialize Prisma client:', error.message);
       this._lastError = error;
     }
     
-    // Initialize connection (but don't await it)
+    // Initialize connection
     this.initializeConnection();
+
+    // Add shutdown handler
+    process.on('SIGTERM', () => this.cleanup());
+    process.on('SIGINT', () => this.cleanup());
+  }
+
+  // Add cleanup method
+  async cleanup() {
+    if (this.prisma) {
+      try {
+        await this.prisma.$disconnect();
+        console.log('Database connection closed gracefully');
+      } catch (error) {
+        console.error('Error disconnecting from database:', error);
+      }
+    }
   }
   
   async initializeConnection() {
