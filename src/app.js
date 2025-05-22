@@ -6,6 +6,9 @@ const helmet = require('helmet');
 const { paymentLimiter, authLimiter, apiLimiter } = require('./middleware/rate-limit');
 const PaymentService = require('./services/payment.service');
 
+// Import the enhanced CORS middleware
+const corsEnhanced = require('./middleware/cors-enhanced');
+
 // Import routes
 const authRoutes = require('./routes/auth');
 const authOauthRoutes = require('./routes/auth/oauth');
@@ -18,6 +21,9 @@ const dashboardRoutes = require('./routes/dashboard');
 const healthRoutes = require('./routes/health');
 const amenitiesRoutes = require('./routes/amenities');
 
+// Import the enhanced CORS middleware
+const corsEnhanced = require('./middleware/cors-enhanced');
+
 // Create Express app
 const app = express();
 
@@ -26,6 +32,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, '../public')));
+
+// Apply our enhanced CORS middleware before all other middleware
+app.use(corsEnhanced);
 
 // Enhanced security middleware
 app.use(helmet({
@@ -49,35 +58,35 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS configuration
-app.use(cors({
-    origin: function(origin, callback) {
-        const allowedOrigins = [
-            process.env.FRONTEND_URL,
-            'http://localhost:5173',
-            'http://localhost:5174',
-            'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
-            'https://airbnb-frontend-gamma.vercel.app',
-            'https://*.vercel.app'
-        ].filter(Boolean);
-        
-        if (!origin || allowedOrigins.some(allowed => {
-            if (allowed.includes('*')) {
-                const domain = allowed.replace('*', '.*');
-                return new RegExp(`^${domain}$`).test(origin);
-            }
-            return origin === allowed;
-        })) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-    credentials: true,
-    maxAge: 86400
-}));
+// Remove the default CORS middleware since we're using our enhanced version
+// app.use(cors({
+//     origin: function(origin, callback) {
+//         const allowedOrigins = [
+//             process.env.FRONTEND_URL,
+//             'http://localhost:5173',
+//             'http://localhost:5174',
+//             'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
+//             'https://airbnb-frontend-gamma.vercel.app',
+//             'https://*.vercel.app'
+//         ].filter(Boolean);
+//         
+//         if (!origin || allowedOrigins.some(allowed => {
+//             if (allowed.includes('*')) {
+//                 const domain = allowed.replace('*', '.*');
+//                 return new RegExp(`^${domain}$`).test(origin);
+//             }
+//             return origin === allowed;
+//         })) {
+//             callback(null, true);
+//         } else {
+//             callback(new Error('Not allowed by CORS'));
+//         }
+//     },
+//     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+//     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+//     credentials: true,
+//     maxAge: 86400
+// }));
 
 // Apply rate limiters
 app.use('/api/auth', authLimiter);

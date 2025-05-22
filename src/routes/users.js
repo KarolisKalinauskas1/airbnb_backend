@@ -89,8 +89,15 @@ router.get('/full-info', async (req, res) => {
 router.get('/me', async (req, res) => {
   try {
     if (!req.user) {
+      console.error('No user object in request. Auth middleware may not be working correctly.');
       return res.status(401).json({ error: 'Authentication required' });
     }
+
+    // Log user info from token
+    console.log('User from token:', { 
+      id: req.user.user_id,
+      email: req.user.email 
+    });
 
     // Get user ID and make sure it's a number
     const userId = parseInt(req.user.user_id);
@@ -100,31 +107,39 @@ router.get('/me', async (req, res) => {
       return res.status(500).json({ error: 'Invalid user ID format' });
     }
 
-    const user = await prisma.public_users.findUnique({
-      where: { user_id: userId },
-      select: {
-        user_id: true,
-        full_name: true,
-        email: true,
-        isowner: true,
-        verified: true,
-        created_at: true,
-        updated_at: true
+    try {
+      const user = await prisma.public_users.findUnique({
+        where: { user_id: userId },
+        select: {
+          user_id: true,
+          full_name: true,
+          email: true,
+          isowner: true,
+          verified: true,
+          created_at: true,
+          updated_at: true
+        }
+      });
+
+      if (!user) {
+        console.error('User not found:', userId);
+        return res.status(404).json({ error: 'User not found' });
       }
-    });
 
-    if (!user) {
-      console.error('User not found:', userId);
-      return res.status(404).json({ error: 'User not found' });
+      // Format response data
+      const userData = {
+        ...user,
+        isowner: user.isowner === '1' ? '1' : '0' // Ensure consistent string format for isowner
+      };
+
+      res.json(userData);
+    } catch (dbError) {
+      console.error('Database error fetching user:', dbError);
+      res.status(500).json({ 
+        error: 'Database error',
+        message: process.env.NODE_ENV === 'development' ? dbError.message : 'Error retrieving user data'
+      });
     }
-
-    // Format response data
-    const userData = {
-      ...user,
-      isowner: user.isowner === '1' ? '1' : '0' // Ensure consistent string format for isowner
-    };
-
-    res.json(userData);
   } catch (error) {
     console.error('Error fetching user:', error);
     res.status(500).json({ 

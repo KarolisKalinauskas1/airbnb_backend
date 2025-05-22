@@ -10,13 +10,13 @@ const prisma = new PrismaClient({
       url: process.env.DATABASE_URL
     }
   },
-  // Add connection pool configuration
+  // Add connection pool configuration with values from env or defaults
   // Increase the connection timeout and reduce connection limit
   __internal: {
     engine: {
-      connectionLimit: 5, // Reduce from default to prevent pool exhaustion
-      connectionTimeout: 30000, // Increase timeout to 30 seconds
-      queueTimeout: 10000, // Queue timeout to 10 seconds
+      connectionLimit: parseInt(process.env.DATABASE_CONNECTION_LIMIT || '5'), 
+      connectionTimeout: parseInt(process.env.DATABASE_CONNECTION_TIMEOUT || '30000'),
+      queueTimeout: parseInt(process.env.DATABASE_IDLE_TIMEOUT || '10000'),
     }
   }
 });
@@ -67,7 +67,15 @@ async function connect() {
     
     // In serverless environments, we should fail gracefully
     if (process.env.NODE_ENV === 'production') {
-      console.error('Failed to connect to database in serverless environment');
+      console.error('Failed to connect to database in serverless environment. Check DATABASE_URL and network settings.');
+      // Log more details about the connection attempt
+      console.error('Connection details:', {
+        host: process.env.DATABASE_HOST || 'not-set',
+        database: process.env.DATABASE_NAME || 'not-set',
+        port: process.env.DATABASE_PORT || 'not-set',
+        user: process.env.DATABASE_USER ? 'set' : 'not-set',
+        url_format: process.env.DATABASE_URL ? 'postgresql://user:pass@host:port/db' : 'not-set'
+      });
       isConnected = false;
       return false;
     } else {

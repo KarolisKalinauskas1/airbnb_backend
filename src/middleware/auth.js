@@ -65,12 +65,28 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    if (!decoded || !decoded.sub) {
+    // Verify token with detailed error handling
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (jwtError) {
+      console.error('JWT Verification Error:', {
+        error: jwtError.message,
+        name: jwtError.name,
+        token: token.substring(0, 10) + '...'
+      });
+      
       return res.status(401).json({
         error: 'Invalid Token',
-        message: 'Authentication token is invalid'
+        message: `Authentication token is invalid: ${jwtError.message}`
+      });
+    }
+
+    if (!decoded || !decoded.sub) {
+      console.error('Decoded token missing sub field:', decoded);
+      return res.status(401).json({
+        error: 'Invalid Token',
+        message: 'Authentication token is missing required fields'
       });
     }
 
@@ -83,21 +99,33 @@ const authenticate = async (req, res, next) => {
           message: 'This token has been revoked'
         });
       }
+    }    // Get user from database
+    let user;
+    try {
+      user = await prisma.public_users.findUnique({
+        where: { user_id: decoded.sub },
+        select: {
+          user_id: true,
+          email: true,
+          full_name: true,
+          isowner: true,
+          status: true
+        }
+      });
+    } catch (dbError) {
+      console.error('Database error fetching user:', {
+        userId: decoded.sub, 
+        error: dbError.message
+      });
+      
+      return res.status(500).json({
+        error: 'Database Error',
+        message: 'Failed to retrieve user data from database'
+      });
     }
 
-    // Get user from database
-    const user = await prisma.public_users.findUnique({
-      where: { user_id: decoded.sub },
-      select: {
-        user_id: true,
-        email: true,
-        full_name: true,
-        isowner: true,
-        status: true
-      }
-    });
-
     if (!user) {
+      console.error('User not found for ID:', decoded.sub);
       return res.status(401).json({
         error: 'Invalid User',
         message: 'User not found'
