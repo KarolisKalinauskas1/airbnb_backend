@@ -16,6 +16,7 @@ const bookingRoutes = require('./routes/bookings');
 const reviewRoutes = require('./routes/reviews');
 const dashboardRoutes = require('./routes/dashboard');
 const healthRoutes = require('./routes/health');
+const amenitiesRoutes = require('./routes/amenities');
 // Import middleware
 const { errorHandler } = require('./middleware/error');
 const routeAccessMiddleware = require('./middleware/route-access');
@@ -150,6 +151,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/geocoding', campingSpotsRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/amenities', amenitiesRoutes);
 // Make reviews publicly accessible without authentication
 app.use('/api/reviews', reviewRoutes);  
 app.use('/api/dashboard', authenticate, dashboardRoutes);
