@@ -66,6 +66,7 @@ app.use(cors({
       'https://airbnb-frontend-i8p5-88p7a4emc-karoliskalinauskas1s-projects.vercel.app',
       'https://airbnb-frontend.vercel.app',
       'https://*.vercel.app',
+      'https://airbnb-frontend-gamma.vercel.app',
       process.env.CORS_ORIGIN,
       process.env.FRONTEND_URL
     ].filter(Boolean); // Remove undefined/null values
