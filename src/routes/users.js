@@ -113,19 +113,18 @@ router.get('/me', async (req, res) => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       });
-    }
-
-    // Get user ID and make sure it's a number
-    const userId = parseInt(req.user.user_id);
+    }    // Get Supabase auth user ID (UUID)
+    const supabaseAuthId = req.user.user_id;
     
-    if (isNaN(userId)) {
+    if (!supabaseAuthId) {
       console.error('Invalid user_id format:', req.user.user_id);
       return res.status(500).json({ error: 'Invalid user ID format' });
     }
 
     try {
-      const user = await prisma.public_users.findUnique({
-        where: { user_id: userId },
+      // First try to find user by auth_user_id (the UUID from Supabase)
+      const user = await prisma.public_users.findFirst({
+        where: { auth_user_id: supabaseAuthId },
         select: {
           user_id: true,
           full_name: true,
@@ -137,8 +136,32 @@ router.get('/me', async (req, res) => {
         }
       });
 
+      // If that fails, fall back to finding by email
+      if (!user && req.user.email) {
+        const userByEmail = await prisma.public_users.findUnique({
+          where: { email: req.user.email },
+          select: {
+            user_id: true,
+            full_name: true,
+            email: true,
+            isowner: true,
+            verified: true,
+            created_at: true,
+            updated_at: true
+          }
+        });
+        
+        if (userByEmail) {
+          console.log(`Found user by email: ${req.user.email}`);
+          return res.json({
+            ...userByEmail,
+            isowner: userByEmail.isowner === '1' ? '1' : '0'
+          });
+        }
+      }
+
       if (!user) {
-        console.error('User not found:', userId);
+        console.error('User not found with auth_user_id:', supabaseAuthId);
         return res.status(404).json({ error: 'User not found' });
       }
 

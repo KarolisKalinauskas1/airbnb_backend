@@ -102,19 +102,47 @@ const authenticate = async (req, res, next) => {
     }    // Get user from database
     let user;
     try {
-      user = await prisma.public_users.findUnique({
-        where: { user_id: decoded.sub },
+      // First try to fetch user by auth_user_id (UUID from Supabase)
+      user = await prisma.public_users.findFirst({
+        where: { auth_user_id: decoded.sub },
         select: {
           user_id: true,
           email: true,
           full_name: true,
           isowner: true,
-          status: true
+          verified: true
         }
       });
+      
+      // If user not found by auth_user_id, try by email as fallback
+      if (!user && decoded.email) {
+        user = await prisma.public_users.findUnique({
+          where: { email: decoded.email },
+          select: {
+            user_id: true,
+            email: true,
+            full_name: true,
+            isowner: true,
+            verified: true
+          }
+        });
+        
+        // If we found user by email but auth_user_id is not set, update it
+        if (user) {
+          try {
+            await prisma.public_users.update({
+              where: { user_id: user.user_id },
+              data: { auth_user_id: decoded.sub }
+            });
+            console.log(`Updated auth_user_id for user: ${user.email}`);
+          } catch (updateError) {
+            console.error('Failed to update auth_user_id:', updateError);
+          }
+        }
+      }
     } catch (dbError) {
       console.error('Database error fetching user:', {
-        userId: decoded.sub, 
+        authUserId: decoded.sub, 
         error: dbError.message
       });
       
@@ -122,20 +150,37 @@ const authenticate = async (req, res, next) => {
         error: 'Database Error',
         message: 'Failed to retrieve user data from database'
       });
-    }
-
-    if (!user) {
-      console.error('User not found for ID:', decoded.sub);
+    }    if (!user) {
+      // For security and robustness, we might still let certain endpoints proceed
+      // with limited access by setting a basic user object from token data
+      const isPublicEndpoint = req.path.startsWith('/api/public/') || 
+                              req.path === '/api/health' ||
+                              req.path === '/health';
+                              
+      if (isPublicEndpoint) {
+        req.user = {
+          user_id: null,
+          auth_user_id: decoded.sub,
+          email: decoded.email || 'unknown',
+          authenticated: true,
+          isPublicAccess: true
+        };
+        console.log('Public endpoint access granted with limited user data');
+        return next();
+      }
+      
+      console.warn('User not found for auth ID:', decoded.sub);
       return res.status(401).json({
         error: 'Invalid User',
-        message: 'User not found'
+        message: 'User not found in database'
       });
     }
 
-    if (user.status === 'INACTIVE') {
+    // Check if account is verified/active
+    if (user.verified === 'false' || user.verified === '0') {
       return res.status(403).json({
-        error: 'Account Inactive',
-        message: 'Your account is currently inactive'
+        error: 'Account Not Verified',
+        message: 'Your account is not verified'
       });
     }
 
@@ -144,7 +189,7 @@ const authenticate = async (req, res, next) => {
       user_id: user.user_id,
       email: user.email,
       full_name: user.full_name,
-      isowner: Number(user.isowner),
+      isowner: user.isowner === '1' ? '1' : '0',
       auth_user_id: decoded.sub
     };
 
