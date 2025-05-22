@@ -291,8 +291,15 @@ app.post('/api/checkout/create-session', async (req, res) => {
     // Create the session
     const session = await stripe.checkout.sessions.create(sessionConfig);
     
-    // Return the session URL
-    return res.json({ url: session.url });
+    // Log what we're sending back to the client
+    console.log('Responding with Stripe URL from direct handler:', session.url);
+    
+    // Send a clean, well-structured response
+    return res.json({ 
+      url: session.url,
+      session_id: session.id,
+      status: 'success'
+    });
   } catch (error) {
     // Add specific error handling for common Stripe issues
     if (error.type === 'StripeInvalidRequestError') {

@@ -682,11 +682,31 @@ router.post('/checkout/create-session', async (req, res) => {
     });
   }
   
-  try {
-    // Ensure there's a valid Stripe API key
+  try {    // Ensure there's a valid Stripe API key
     if (!process.env.STRIPE_SECRET_KEY) {
       return res.status(500).json({ error: 'Payment service configuration error' });
-    }    // Create a safer Stripe checkout session with minimal required data
+    }
+    
+    // Log what we're sending to Stripe
+    console.log('Creating Stripe session with:', {
+      sessionConfig: {
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency: 'eur',
+            product_data: { name: bookingData.spot_name || 'Camping Spot Booking' },
+            unit_amount: Math.round(bookingData.total * 100)
+          },
+          quantity: 1
+        }],
+        mode: 'payment',
+        success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`,
+        metadata: bookingData
+      }
+    });
+
+    // Create a safer Stripe checkout session with minimal required data
     const sessionConfig = {
       payment_method_types: ['card'],
       line_items: [
@@ -721,9 +741,18 @@ router.post('/checkout/create-session', async (req, res) => {
     
     // Add metadata to session config
     sessionConfig.metadata = safeMetadata;
+      // Create the session
+    const session = await stripe.checkout.sessions.create(sessionConfig);
     
-    // Create the session
-    const session = await stripe.checkout.sessions.create(sessionConfig);    return res.json({ url: session.url });
+    // Log what we're sending back to the client
+    console.log('Responding with Stripe URL:', session.url);
+    
+    // Send a clean, well-structured response
+    return res.json({ 
+      url: session.url,
+      session_id: session.id,
+      status: 'success'
+    });
   } catch (error) {
     // Handle error without logging to reduce noise
     
