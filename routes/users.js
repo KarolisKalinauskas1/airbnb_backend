@@ -373,4 +373,14 @@ router.put('/update-profile', authenticate, async (req, res) => {
   }
 });
 
+/**
+ * @route   GET /api/users/me
+ * @desc    Get user information (redirects to full-info for backward compatibility)
+ * @access  Private
+ */
+router.get('/me', authenticate, async (req, res) => {
+  // Forward the request to the full-info endpoint
+  return router.handle(req, res, '/full-info');
+});
+
 module.exports = router;
