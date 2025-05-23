@@ -1,18 +1,24 @@
 // Production-ready CORS middleware with proper origin validation
-const simpleCorsMiddleware = (req, res, next) => {  const allowedOrigins = [
+const simpleCorsMiddleware = (req, res, next) => {
+  // Function to check if origin matches our Vercel deployment pattern
+  const isVercelDeployment = (origin) => {
+    // Match any URL under your project's Vercel domain
+    return /^https:\/\/airbnb-frontend-[a-zA-Z0-9-]+-karoliskalinauskas1s-projects\.vercel\.app$/.test(origin);
+  };
+
+  // Static allowed origins
+  const allowedOrigins = [
     'https://airbnb-frontend-gamma.vercel.app',
-    'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
     'https://airbnb-frontend-i8p5.vercel.app',
-    'https://airbnb-frontend-i8p5-5qbdji6fu-karoliskalinauskas1s-projects.vercel.app',
     'http://localhost:5173',
     'http://localhost:5174'
   ];
-  
-  const origin = req.headers.origin;
-  const isAllowedOrigin = !origin || allowedOrigins.includes(origin);
+    const origin = req.headers.origin;
+  const isAllowedOrigin = !origin || allowedOrigins.includes(origin) || isVercelDeployment(origin);
   
   // Log the request for debugging
   console.log(`CORS: Request from ${origin} to ${req.method} ${req.path} (${isAllowedOrigin ? 'allowed' : 'blocked'})`);
+  
   // Set CORS headers for allowed origins
   if (isAllowedOrigin) {
     // Log detailed request information for debugging
