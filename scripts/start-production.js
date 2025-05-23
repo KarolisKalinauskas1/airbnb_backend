@@ -30,18 +30,16 @@ async function main() {
     console.log('Checking database connection...');
     if (!await waitForDatabase()) {
       throw new Error('Could not connect to database after multiple retries');
-    }
-
-    // Run Prisma migrations
-    console.log('Running database migrations...');
+    }    // Generate Prisma Client without running migrations
+    console.log('Generating Prisma Client...');
     await new Promise((resolve, reject) => {
-      const migrate = spawn('npx', ['prisma', 'migrate', 'deploy'], {
+      const generate = spawn('npx', ['prisma', 'generate'], {
         stdio: 'inherit'
       });
       
-      migrate.on('close', code => {
+      generate.on('close', code => {
         if (code === 0) resolve();
-        else reject(new Error(`Migration failed with code ${code}`));
+        else reject(new Error(`Prisma Client generation failed with code ${code}`));
       });
     });
 

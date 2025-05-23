@@ -60,4 +60,4 @@ USER expressjs
 EXPOSE 3000
 
 # Run the app
-CMD ["node", "server.js"]
+CMD ["node", "/app/scripts/start-production.js"]
