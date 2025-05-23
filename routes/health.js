@@ -2,6 +2,153 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 
+// Health check state tracking
+const healthState = {
+    isDbConnected: false,
+    lastSuccessfulCheck: null,
+    connectionAttempts: 0,
+    lastConnectionAttempt: null,
+    startupTime: Date.now()
+};
+
+// Create Prisma client with connection pool
+const prisma = new PrismaClient({
+    log: ['error'],
+    errorFormat: 'minimal',
+    datasources: {
+        db: {
+            url: process.env.DATABASE_URL,
+        },
+    },
+    connection: {
+        pool: {
+            min: 2,
+            max: 10
+        }
+    }
+});
+
+// Constants
+const STARTUP_GRACE_PERIOD = 60; // 60 seconds
+const DB_TIMEOUT = 5000; // 5 seconds
+const DB_CHECK_INTERVAL = 10000; // 10 seconds
+const MIN_CHECK_INTERVAL = 1000; // 1 second minimum between checks
+
+// Basic ping endpoint (no database required)
+router.get('/ping', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// Monitor database connection state
+async function checkDatabaseConnection() {
+    try {
+        await Promise.race([
+            prisma.$queryRaw`SELECT 1`,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), DB_TIMEOUT))
+        ]);
+        healthState.isDbConnected = true;
+        healthState.lastSuccessfulCheck = Date.now();
+        healthState.connectionAttempts = 0;
+        return true;
+    } catch (error) {
+        healthState.isDbConnected = false;
+        console.warn('Database connection check failed:', error.message);
+        return false;
+    }
+}
+
+// Start periodic connection monitoring
+setInterval(checkDatabaseConnection, DB_CHECK_INTERVAL);
+
+// Main health check endpoint
+router.get('/', async (req, res) => {
+    const now = Date.now();
+    console.log('Health check called at', new Date(now).toISOString());
+
+    // During startup grace period, always return 200
+    if ((now - healthState.startupTime) < (STARTUP_GRACE_PERIOD * 1000)) {
+        return res.json({ 
+            status: 'starting',
+            uptime: process.uptime(),
+            startupTime: Math.round((now - healthState.startupTime) / 1000),
+            message: 'Service is starting up'
+        });
+    }
+
+    // If we've checked recently and succeeded, return that status
+    if (healthState.lastSuccessfulCheck && 
+        (now - healthState.lastSuccessfulCheck) < DB_CHECK_INTERVAL) {
+        return res.json({
+            status: 'ok',
+            uptime: process.uptime(),
+            lastCheck: new Date(healthState.lastSuccessfulCheck).toISOString()
+        });
+    }
+
+    // Prevent too frequent checks
+    if (healthState.lastConnectionAttempt && 
+        (now - healthState.lastConnectionAttempt) < MIN_CHECK_INTERVAL) {
+        return res.status(429).json({
+            status: 'error',
+            message: 'Too many health check attempts',
+            retryAfter: 1
+        });
+    }
+
+    // Perform fresh database check
+    healthState.lastConnectionAttempt = now;
+    const isConnected = await checkDatabaseConnection();
+
+    if (isConnected) {
+        return res.json({
+            status: 'ok',
+            uptime: process.uptime(),
+            lastCheck: new Date(healthState.lastSuccessfulCheck).toISOString()
+        });
+    }
+
+    // Handle database connection failure
+    healthState.connectionAttempts++;
+    
+    // If we had a successful check in the last 5 minutes, return degraded
+    const recentSuccess = healthState.lastSuccessfulCheck && 
+        (now - healthState.lastSuccessfulCheck) < 300000;
+
+    if (recentSuccess) {
+        return res.status(200).json({
+            status: 'degraded',
+            message: 'Service experiencing intermittent database connectivity',
+            uptime: process.uptime(),
+            lastSuccessfulCheck: new Date(healthState.lastSuccessfulCheck).toISOString(),
+            retryAfter: 5
+        });
+    }
+
+    // Otherwise return service unavailable
+    return res.status(503).json({
+        status: 'error',
+        message: 'Service temporarily unavailable',
+        uptime: process.uptime(),
+        attempts: healthState.connectionAttempts,
+        retryAfter: 10,
+        nextCheck: new Date(now + 10000).toISOString()
+    });
+});
+const { PrismaClient } = require('@prisma/client');
+
+// Health check state tracking
+const healthState = {
+    isDbConnected: false,
+    lastSuccessfulCheck: null,
+    connectionAttempts: 0,
+    lastConnectionAttempt: null,
+    startupTime: Date.now()
+};
+
 // Create Prisma client with connection pool
 const prisma = new PrismaClient({
     log: ['error'],
@@ -20,12 +167,40 @@ const prisma = new PrismaClient({
     }
 });
 
-// Track connection attempts and failures
-let connectionAttempts = 0;
-let lastConnected = Date.now();
-const MAX_RETRIES = 3;
+// Monitor database connection state
+let dbCheckInterval;
+async function monitorDatabaseConnection() {
+    if (dbCheckInterval) return; // Prevent multiple intervals
+
+    dbCheckInterval = setInterval(async () => {
+        try {
+            await prisma.$queryRaw`SELECT 1`;
+            healthState.isDbConnected = true;
+            healthState.lastSuccessfulCheck = Date.now();
+            healthState.connectionAttempts = 0;
+        } catch (error) {
+            healthState.isDbConnected = false;
+            console.warn('Database connection check failed:', error.message);
+        }
+    }, 10000); // Check every 10 seconds
+}
+
+// Start monitoring
+monitorDatabaseConnection();
+
 const STARTUP_GRACE_PERIOD = 60; // 60 seconds startup grace period
-const DB_TIMEOUT = 10000; // 10 second timeout
+const DB_TIMEOUT = 5000; // 5 second timeout
+const DB_CHECK_INTERVAL = 10000; // 10 seconds between checks
+const MAX_RETRIES = 3;
+
+// Basic availability check endpoint (no database)
+router.get('/ping', (req, res) => {
+    res.status(200).json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
 
 // Basic health check that Railway uses
 router.get('/', async (req, res) => {
@@ -33,42 +208,66 @@ router.get('/', async (req, res) => {
     
     try {
         // During startup grace period, always return 200
-        if (process.uptime() < STARTUP_GRACE_PERIOD) {
+        if ((Date.now() - healthState.startupTime) < (STARTUP_GRACE_PERIOD * 1000)) {
             console.log('Service still starting up, returning 200');
             return res.json({ 
                 status: 'starting',
                 uptime: process.uptime(),
+                startupTime: Math.round((Date.now() - healthState.startupTime) / 1000),
                 message: 'Service is starting up'
             });
         }
 
-        // Add timeout to the database check with retries
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                const dbCheck = Promise.race([
-                    prisma.$executeRaw`SELECT 1`,
-                    new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Database connection timeout')), DB_TIMEOUT)
-                    )
-                ]);
-
-                await dbCheck;
-                
-                // Reset connection metrics on success
-                connectionAttempts = 0;
-                lastConnected = Date.now();
-                console.log('Health check passed at', new Date().toISOString());
-                
-                return res.json({ 
-                    status: 'ok',
-                    uptime: process.uptime()
-                });
-            } catch (retryError) {
-                console.warn(`Database check attempt ${attempt}/${MAX_RETRIES} failed:`, retryError.message);
-                if (attempt === MAX_RETRIES) throw retryError;
-                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s between retries
-            }
+        // If we have a recent successful check, use that status
+        if (healthState.lastSuccessfulCheck && 
+            (Date.now() - healthState.lastSuccessfulCheck) < DB_CHECK_INTERVAL) {
+            return res.json({
+                status: 'ok',
+                uptime: process.uptime(),
+                lastCheck: new Date(healthState.lastSuccessfulCheck).toISOString()
+            });
+        }        // Prevent too frequent connection attempts
+        if (healthState.lastConnectionAttempt && 
+            (Date.now() - healthState.lastConnectionAttempt) < 1000) { // 1 second minimum between attempts
+            return res.status(503).json({
+                status: 'error',
+                message: 'Too many health check attempts',
+                retryAfter: 1
+            });
         }
+
+        // Check database connection state
+        healthState.lastConnectionAttempt = Date.now();
+        
+        try {
+            const dbCheck = await Promise.race([
+                prisma.$executeRaw`SELECT 1`,
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Database connection timeout')), DB_TIMEOUT)
+                )
+            ]);
+
+            // Update health state on success
+            healthState.isDbConnected = true;
+            healthState.lastSuccessfulCheck = Date.now();
+            healthState.connectionAttempts = 0;
+            
+            return res.json({ 
+                status: 'ok',
+                uptime: process.uptime(),
+                lastCheck: new Date(healthState.lastSuccessfulCheck).toISOString()
+            });
+        } catch (error) {
+            healthState.isDbConnected = false;
+            healthState.connectionAttempts++;
+            
+            // Log detailed error information
+            console.error('Database health check failed:', {
+                error: error.message,
+                attempts: healthState.connectionAttempts,
+                lastSuccess: healthState.lastSuccessfulCheck ? 
+                    new Date(healthState.lastSuccessfulCheck).toISOString() : 'never'
+            });
     } catch (error) {
         console.error('Health check failed:', {
             error: error.message,

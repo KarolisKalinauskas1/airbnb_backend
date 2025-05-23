@@ -30,11 +30,11 @@ app.use('/api/checkout', paymentLimiter);
 app.use('/api', apiLimiter);
 
 // Import and mount routes
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const campingSpotsRoutes = require('./routes/camping-spots');
-const bookingRoutes = require('./routes/bookings');
-const healthRoutes = require('./routes/health');
+const authRoutes = require('../routes/auth');
+const userRoutes = require('../routes/users');
+const campingSpotsRoutes = require('../routes/camping-spots');
+const bookingRoutes = require('../routes/bookings');
+const healthRoutes = require('../routes/health');
 
 // Simple health check endpoint that doesn't depend on other services
 app.get('/health', (req, res) => {
