@@ -122,6 +122,17 @@ app.use(async (req, res, next) => {
   }
 });
 
+// Handle preflight requests for all routes
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, access-control-allow-origin');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  res.status(204).end();
+});
+
 // Apply route access middleware BEFORE mounting routes
 app.use('/api', (req, res, next) => {
   console.log('API request received:', req.method, req.path);

@@ -1,6 +1,22 @@
 const express = require('express');
 const path = require('path');
-const cookieParser = require('cookie-parser');
+const cookiePa//         if (!origin || allowedOrigins.some(allowed => {
+//             if (allowed.includes('*')) {
+//                 const domain = allowed.replace('*', '.*');
+//                 return new RegExp(`^${domain}$`).test(origin);
+//             }
+//             return origin === allowed;
+//         })) {
+//             callback(null, true);
+//         } else {
+//             callback(new Error('Not allowed by CORS'));
+//         }
+//     },
+//     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+//     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'access-control-allow-origin', 'Access-Control-Allow-Headers', 'Access-Control-Allow-Origin'],
+//     credentials: true,
+//     maxAge: 86400
+// }));ookie-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const { paymentLimiter, authLimiter, apiLimiter } = require('./middleware/rate-limit');
@@ -26,19 +42,27 @@ const amenitiesRoutes = require('./routes/amenities');
 // Create Express app
 const app = express();
 
-// Basic middleware setup
+// Basic middleware setup that doesn't affect CORS
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, '../public')));
 
-// Apply our simple CORS middleware before all other middleware
+// Add CORS preflight handler for all routes
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  res.header('Access-Control-Allow-Origin', origin);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, access-control-allow-origin');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400'); // 24 hours
+  res.status(204).end();
+});
+
+// Apply CORS middleware for all routes
 app.use(simpleCors);
 
-// Mount the health check route first to avoid unnecessary middleware
+// Mount routes after CORS is properly set up
 app.use('/health', healthRoutes);
-
-// Mount API routes
 app.use('/api/camping-spots', campingSpotsRoutes);
 
 // Enhanced security middleware with development-friendly settings
@@ -51,10 +75,14 @@ app.use(helmet({
 
 // Ensure CORS headers are not removed by other middleware
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-  res.header('Access-Control-Allow-Credentials', 'true');
+  const origin = req.headers.origin;
+  if (origin) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, access-control-allow-origin, Access-Control-Allow-Headers, Access-Control-Allow-Origin');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Vary', 'Origin, Access-Control-Request-Headers');
+  }
   next();
 });
 
