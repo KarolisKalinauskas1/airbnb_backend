@@ -51,6 +51,17 @@ const passwordResetLimiter = createRateLimiter(
 // Enhanced authentication middleware
 const authenticate = async (req, res, next) => {
   try {
+    // Log the request path and method
+    console.log('[Auth Middleware] Processing request:', {
+      timestamp: new Date().toISOString(),
+      path: req.path,
+      method: req.method,
+      headers: {
+        authorization: req.headers.authorization ? 'present' : 'missing',
+        cookie: req.headers.cookie ? 'present' : 'missing'
+      }
+    });
+
     // Get token from different possible sources with better logging
     const authHeader = req.headers.authorization;
     const cookieToken = req.cookies?.token;

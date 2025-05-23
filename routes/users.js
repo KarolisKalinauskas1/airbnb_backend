@@ -16,6 +16,13 @@ router.use(['/full-info', '/basic-info', '/change-password'], authRateLimiter);
  */
 router.get('/full-info', authenticate, async (req, res) => {
   try {
+    console.log('[/full-info] Request received:', {
+      timestamp: new Date().toISOString(),
+      hasUser: !!req.user,
+      userId: req.user?.user_id,
+      authHeader: req.headers.authorization ? 'present' : 'missing'
+    });
+
     // Set a longer timeout for this request
     if (req.setTimeout) {
       req.setTimeout(15000);

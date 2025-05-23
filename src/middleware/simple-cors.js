@@ -1,17 +1,36 @@
-// Simple CORS middleware that allows all origins
-// This is for debugging only - don't use in production long-term
+// Production-ready CORS middleware with proper origin validation
 const simpleCorsMiddleware = (req, res, next) => {
-  // Get the origin from the request
-  const origin = req.headers.origin || '*';
+  const allowedOrigins = [
+    'https://airbnb-frontend-gamma.vercel.app',
+    'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
+    'http://localhost:5173',
+    'http://localhost:5174'
+  ];
+  
+  const origin = req.headers.origin;
+  const isAllowedOrigin = !origin || allowedOrigins.includes(origin);
   
   // Log the request for debugging
-  console.log(`CORS simplification: Request from ${origin} to ${req.method} ${req.path}`);
-  
-  // Set CORS headers for all requests
-  res.header('Access-Control-Allow-Origin', origin);
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-CSRF-Token');
-  res.header('Access-Control-Allow-Credentials', 'true');
+  console.log(`CORS: Request from ${origin} to ${req.method} ${req.path} (${isAllowedOrigin ? 'allowed' : 'blocked'})`);
+    // Set CORS headers for allowed origins
+  if (isAllowedOrigin) {
+    // Log detailed request information for debugging
+    console.log('Request details:', {
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      path: req.path,
+      origin: origin,
+      headers: {
+        authorization: req.headers.authorization ? 'present' : 'missing',
+        contentType: req.headers['content-type'],
+        accept: req.headers.accept
+      }
+    });
+
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    res.header('Access-Control-Allow-Credentials', 'true');
   
   // Handle preflight requests
   if (req.method === 'OPTIONS') {
