@@ -35,6 +35,9 @@ app.use(express.static(path.join(__dirname, '../public')));
 // Apply our simple CORS middleware before all other middleware
 app.use(simpleCors);
 
+// Mount the health check route first to avoid unnecessary middleware
+app.use('/health', healthRoutes);
+
 // Enhanced security middleware
 app.use(helmet({
     contentSecurityPolicy: false, // Disable CSP for debugging

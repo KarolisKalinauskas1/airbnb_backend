@@ -12,16 +12,26 @@ router.get('/', async (req, res) => {
     console.log('Health check endpoint called at', new Date().toISOString());
     
     try {
-        // Simple check without database to ensure the app is at least running
+        // Test database connection
+        await prisma.$connect();
+        await prisma.$disconnect();
+        
+        // If we get here, everything is working
+        console.log('Health check passed at', new Date().toISOString());
         res.json({ status: 'ok' });
     } catch (error) {
         console.error('Health check failed:', {
             error: error.message,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            type: error.name,
+            code: error.code
         });
 
         // Railway expects a 503 for service unavailable
-        res.status(503).json({ status: 'error' });
+        res.status(503).json({ 
+            status: 'error',
+            message: 'Service temporarily unavailable'
+        });
     }
 });
 
