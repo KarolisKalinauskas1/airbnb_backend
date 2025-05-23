@@ -375,12 +375,92 @@ router.put('/update-profile', authenticate, async (req, res) => {
 
 /**
  * @route   GET /api/users/me
- * @desc    Get user information (redirects to full-info for backward compatibility)
+ * @desc    Get user information (same as full-info)
  * @access  Private
  */
 router.get('/me', authenticate, async (req, res) => {
-  // Forward the request to the full-info endpoint
-  return router.handle(req, res, '/full-info');
+  try {
+    // Set a longer timeout for this request
+    if (req.setTimeout) {
+      req.setTimeout(15000);
+    }
+    
+    // Early response if user is already in request
+    if (req.user) {
+      try {
+        // Clean up the user object before sending
+        const userData = {
+          user_id: req.user.user_id,
+          email: req.user.email,
+          full_name: req.user.full_name,
+          isowner: Number(req.user.isowner) || 0,
+          verified: req.user.verified || 'no',
+          bio: req.user.bio || '',
+          profile_image: req.user.profile_image || null
+        };
+        
+        return res.json(userData);
+      } catch (formatError) {
+        console.error('Error formatting user data:', formatError);
+        return res.status(500).json({
+          error: 'Data formatting error',
+          message: 'Error while preparing user data',
+          details: process.env.NODE_ENV === 'development' ? formatError.message : undefined
+        });
+      }
+    }
+    
+    // If we don't have user data already, fetch it from DB
+    try {
+      const userId = req.userId || (req.user && req.user.user_id);
+      
+      if (!userId) {
+        return res.status(401).json({ 
+          error: 'Authentication required',
+          message: 'User ID not found in session or token'
+        });
+      }
+      
+      const user = await prisma.public_users.findUnique({
+        where: { user_id: parseInt(userId) },
+        select: { 
+          user_id: true,
+          email: true,
+          full_name: true,
+          isowner: true,
+          bio: true,
+          verified: true,
+          profile_image: true,
+          created_at: true,
+          updated_at: true
+        }
+      });
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Format the response
+      const userData = {
+        ...user,
+        isowner: Number(user.isowner) || 0
+      };
+      
+      return res.json(userData);
+    } catch (dbError) {
+      console.error('Database error fetching user info:', dbError);
+      return res.status(500).json({ 
+        error: 'Database error',
+        message: 'Error while retrieving user data from database'
+      });
+    }
+  } catch (error) {
+    console.error('Unhandled error in /me endpoint:', error);
+    return res.status(500).json({ 
+      error: 'Server error',
+      message: 'An unexpected error occurred'
+    });
+  }
 });
 
 module.exports = router;

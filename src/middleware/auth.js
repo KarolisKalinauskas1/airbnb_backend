@@ -51,14 +51,23 @@ const passwordResetLimiter = createRateLimiter(
 // Enhanced authentication middleware
 const authenticate = async (req, res, next) => {
   try {
-    // Get token from different possible sources
-    const token = (
-      req.headers.authorization?.replace('Bearer ', '') ||
-      req.cookies?.token ||
-      req.body?.token
-    );
+    // Get token from different possible sources with better logging
+    const authHeader = req.headers.authorization;
+    const cookieToken = req.cookies?.token;
+    const bodyToken = req.body?.token;
+
+    const token = authHeader?.replace('Bearer ', '') || cookieToken || bodyToken;
+
+    // Log token source for debugging
+    console.log('Auth token source:', {
+      hasAuthHeader: !!authHeader,
+      hasCookieToken: !!cookieToken,
+      hasBodyToken: !!bodyToken,
+      timestamp: new Date().toISOString()
+    });
 
     if (!token) {
+      console.warn('No auth token provided in request');
       return res.status(401).json({
         error: 'Authentication Required',
         message: 'No authentication token provided'
