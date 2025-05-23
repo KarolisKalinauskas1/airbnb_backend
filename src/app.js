@@ -1,321 +1,57 @@
 const express = require('express');
 const path = require('path');
-const cookiePa//         if (!origin || allowedOrigins.some(allowed => {
-//             if (allowed.includes('*')) {
-//                 const domain = allowed.replace('*', '.*');
-//                 return new RegExp(`^${domain}$`).test(origin);
-//             }
-//             return origin === allowed;
-//         })) {
-//             callback(null, true);
-//         } else {
-//             callback(new Error('Not allowed by CORS'));
-//         }
-//     },
-//     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-//     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'access-control-allow-origin', 'Access-Control-Allow-Headers', 'Access-Control-Allow-Origin'],
-//     credentials: true,
-//     maxAge: 86400
-// }));ookie-parser');
-const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const { paymentLimiter, authLimiter, apiLimiter } = require('./middleware/rate-limit');
-const { authenticate } = require('./middleware/auth');
-const PaymentService = require('./services/payment.service');
-
-// Import the CORS middleware options - we're using the simple one for debugging
-// const corsEnhanced = require('./middleware/cors-enhanced');
-const simpleCors = require('./middleware/simple-cors');
-
-// Import routes
-const authRoutes = require('./routes/auth');
-const authOauthRoutes = require('./routes/auth/oauth');
-const googleAuthRoutes = require('./routes/auth/google');
-const userRoutes = require('./routes/users');
-const campingSpotsRoutes = require('./routes/campingSpots');
-const bookingRoutes = require('./routes/bookings');
-const reviewRoutes = require('./routes/reviews');
-const dashboardRoutes = require('./routes/dashboard');
-const healthRoutes = require('./routes/health');
-const amenitiesRoutes = require('./routes/amenities');
+const corsConfig = require('./middleware/cors-config');
+const errorRecovery = require('./middleware/error-recovery');
 
 // Create Express app
 const app = express();
 
-// Basic middleware setup that doesn't affect CORS
+// Basic middleware setup
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 
-// Add CORS preflight handler for all routes
-app.options('*', (req, res) => {
-  const origin = req.headers.origin;
-  res.header('Access-Control-Allow-Origin', origin);
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, access-control-allow-origin');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
-  res.status(204).end();
-});
-
-// Apply CORS middleware for all routes
-app.use(simpleCors);
-
-// Mount routes after CORS is properly set up
-app.use('/health', healthRoutes);
-app.use('/api/camping-spots', campingSpotsRoutes);
-
-// Enhanced security middleware with development-friendly settings
+// Apply security middleware first
 app.use(helmet({
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: false, // Configured separately
     crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" },
-    crossOriginOpenerPolicy: false
+    crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Ensure CORS headers are not removed by other middleware
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, access-control-allow-origin, Access-Control-Allow-Headers, Access-Control-Allow-Origin');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Vary', 'Origin, Access-Control-Request-Headers');
-  }
-  next();
-});
-
-// Remove the default CORS middleware since we're using our enhanced version
-// app.use(cors({
-//     origin: function(origin, callback) {
-//         const allowedOrigins = [
-//             process.env.FRONTEND_URL,
-//             'http://localhost:5173',
-//             'http://localhost:5174',
-//             'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
-//             'https://airbnb-frontend-gamma.vercel.app',
-//             'https://*.vercel.app'
-//         ].filter(Boolean);
-//         
-//         if (!origin || allowedOrigins.some(allowed => {
-//             if (allowed.includes('*')) {
-//                 const domain = allowed.replace('*', '.*');
-//                 return new RegExp(`^${domain}$`).test(origin);
-//             }
-//             return origin === allowed;
-//         })) {
-//             callback(null, true);
-//         } else {
-//             callback(new Error('Not allowed by CORS'));
-//         }
-//     },
-//     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-//     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
-//     credentials: true,
-//     maxAge: 86400
-// }));
+// Apply CORS configuration
+app.use(corsConfig);
 
 // Apply rate limiters
 app.use('/api/auth', authLimiter);
 app.use('/api/checkout', paymentLimiter);
 app.use('/api', apiLimiter);
 
-// Add base route at app level for Railway health checks - CRITICAL for deployment
+// Import and mount routes
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/users');
+const campingSpotsRoutes = require('./routes/camping-spots');
+const bookingRoutes = require('./routes/bookings');
+const healthRoutes = require('./routes/health');
+
+// Simple health check endpoint that doesn't depend on other services
 app.get('/health', (req, res) => {
-  console.log('Root health check endpoint called at', new Date().toISOString());
-  res.status(200).json({ status: 'ok' });
-});
-
-// Also add API health endpoint directly to ensure it's working even if route mounting fails
-app.get('/api/health', (req, res) => {
-  console.log('API health check endpoint called at', new Date().toISOString());
-  res.status(200).json({ status: 'ok' });
-});
-
-// Add ping endpoint as a secondary health check
-app.get('/ping', (req, res) => {
-  res.status(200).json({ status: 'pong' });
+    res.status(200).json({ 
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
 });
 
 // Mount routes
 app.use('/api/auth', authRoutes);
-app.use('/api/auth/oauth', authOauthRoutes);
-app.use('/api/auth/oauth/google', googleAuthRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/camping-spots', campingSpotsRoutes);
 app.use('/api/bookings', bookingRoutes);
-app.use('/api/reviews', reviewRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/health', healthRoutes);
-app.use('/api/amenities', amenitiesRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-
-// Enhanced payment endpoint with detailed error handling
-app.post('/api/checkout/create-session', paymentLimiter, authenticate, async (req, res) => {
-    try {
-        // Log the request for debugging
-        console.log('Checkout session request:', {
-            body: req.body,
-            user: req.user,
-            headers: req.headers.authorization ? 'Auth header present' : 'No auth header'
-        });
-
-        // Get authenticated user info
-        if (!req.user) {
-            return res.status(401).json({
-                error: 'Authentication required',
-                message: 'You must be logged in to complete a booking'
-            });
-        }
-
-        // Debug exactly what fields we have for better troubleshooting
-        console.log('Request body raw:', JSON.stringify(req.body, null, 2));
-        
-        // Extract fields directly with proper typing and fallbacks
-        const spotId = parseInt(req.body.spotId || 0);
-        const startDate = req.body.startDate || null;
-        const endDate = req.body.endDate || null;
-        const guestCount = parseInt(req.body.guests || 1);
-        const baseAmount = parseFloat(req.body.baseAmount || 0);
-        const serviceFee = parseFloat(req.body.serviceFee || 0);
-        const totalAmount = parseFloat(req.body.totalAmount || 0);
-        const userId = req.user?.user_id;
-
-        if (!spotId || !startDate || !endDate || !guestCount || !baseAmount || !totalAmount || !userId) {
-            throw new Error('Missing required fields for checkout');
-        }
-        
-        // Transform frontend data format to match backend expectations with direct assignments
-        const transformedData = {
-            camper_id: spotId,
-            user_id: userId,
-            start_date: startDate,
-            end_date: endDate,
-            number_of_guests: guestCount,
-            cost: baseAmount,
-            service_fee: serviceFee,
-            total: totalAmount,
-            spot_name: req.body.spotName
-        };
-        
-        console.log('Transformed checkout data:', transformedData);
-        
-        console.log('Transformed checkout data:', transformedData);
-        
-        const session = await PaymentService.createCheckoutSession(transformedData);
-        res.json(session);
-    } catch (error) {
-        console.error('Payment initialization error:', error);
-        
-        // Handle Stripe-specific errors
-        if (error.type === 'StripeCardError') {
-            return res.status(402).json({
-                error: 'Payment card error',
-                message: error.message,
-                code: error.code
-            });
-        }
-        
-        // Handle validation errors
-        if (error.type === 'StripeInvalidRequestError') {
-            return res.status(400).json({
-                error: 'Invalid payment request',
-                message: error.message,
-                param: error.param
-            });
-        }
-        
-        // Handle authentication errors
-        if (error.type === 'StripeAuthenticationError') {
-            return res.status(401).json({
-                error: 'Payment authentication failed',
-                message: 'Could not authenticate with payment provider'
-            });
-        }
-        
-        // Handle API connection errors
-        if (error.type === 'StripeAPIConnectionError') {
-            return res.status(503).json({
-                error: 'Payment service unavailable',
-                message: 'Could not connect to payment service'
-            });
-        }
-        
-        // Handle rate limiting
-        if (error.type === 'StripeRateLimitError') {
-            return res.status(429).json({
-                error: 'Too many payment requests',
-                message: 'Please try again in a few moments'
-            });
-        }
-        
-        // Handle any other Stripe errors
-        if (error.type?.startsWith('Stripe')) {
-            return res.status(400).json({
-                error: 'Payment processing error',
-                message: error.message
-            });
-        }
-        
-        // Handle internal server errors
-        res.status(500).json({
-            error: 'Payment initialization failed',
-            message: 'An unexpected error occurred while processing your payment'
-        });
-    }
-});
-
-// Error handling
-app.use((err, req, res, next) => {
-    // Log detailed error information
-    console.error('Application error:', {
-        path: req.path,
-        method: req.method,
-        error: err.message,
-        stack: err.stack,
-        timestamp: new Date().toISOString()
-    });
-    
-    // Handle specific error types
-    if (err.name === 'ValidationError') {
-        return res.status(400).json({
-            error: 'Validation Error',
-            message: err.message,
-            details: err.details || 'Invalid input data'
-        });
-    }
-    
-    if (err.name === 'PrismaClientKnownRequestError') {
-        return res.status(400).json({
-            error: 'Database Error',
-            message: 'Invalid data provided',
-            code: err.code
-        });
-    }
-    
-    if (err.name === 'PrismaClientInitializationError') {
-        return res.status(503).json({
-            error: 'Database Service Unavailable',
-            message: 'Database connection failed'
-        });
-    }
-    
-    if (err.name === 'JsonWebTokenError') {
-        return res.status(401).json({
-            error: 'Authentication Error',
-            message: 'Invalid authentication token'
-        });
-    }
-    
-    // Default error response with less information in production
-    res.status(err.status || 500).json({
-        error: err.name || 'Server Error',
-        message: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
-    });
-});
+// Error handling middleware - must be last
+app.use(errorRecovery);
 
 module.exports = app;
