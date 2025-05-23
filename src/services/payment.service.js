@@ -263,21 +263,43 @@ class PaymentService {
      * Format session data for Stripe
      */
     static formatSessionData(bookingData) {
-        // Ensure the metadata is properly sanitized and all values are valid
-        const metadata = this.sanitizeMetadata(bookingData);
+        const {
+            camper_id,
+            user_id,
+            start_date,
+            end_date,
+            number_of_guests,
+            cost,
+            service_fee,
+            total,
+            spot_name
+        } = bookingData;
 
-        // Ensure we have a valid price by parsing as float and rounding to nearest cent
-        const unitAmount = Math.round(parseFloat(bookingData.total) * 100);
-        
-        // Provide a fallback name if none is provided
-        const spotName = bookingData.spot_name || `Camping Spot #${bookingData.camper_id}`;
-        
-        // Get frontend URL from environment variable with fallback
-        const frontendUrl = process.env.FRONTEND_URL || 'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app';
-        
-        // Properly format dates for display
-        const startDate = new Date(bookingData.start_date).toLocaleDateString();
-        const endDate = new Date(bookingData.end_date).toLocaleDateString();
+        // Validate all required fields
+        if (!camper_id || !user_id || !start_date || !end_date || !number_of_guests || !total) {
+            throw new Error('Missing required fields for session data');
+        }
+
+        // Format amounts for Stripe (convert to cents)
+        const unitAmount = Math.round(total * 100);
+
+        // Format dates for display
+        const startDate = new Date(start_date).toLocaleDateString();
+        const endDate = new Date(end_date).toLocaleDateString();
+
+        // Prepare metadata (all values must be strings for Stripe)
+        const metadata = {
+            camper_id: String(camper_id),
+            user_id: String(user_id),
+            start_date: String(start_date),
+            end_date: String(end_date),
+            number_of_guests: String(number_of_guests),
+            cost: String(cost),
+            service_fee: String(service_fee),
+            total: String(total)
+        };
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
         
         return {
             payment_method_types: ['card'],
@@ -285,8 +307,8 @@ class PaymentService {
                 price_data: {
                     currency: 'eur',
                     product_data: {
-                        name: spotName,
-                        description: `Booking from ${startDate} to ${endDate} for ${bookingData.number_of_guests} guests`,
+                        name: spot_name || `Camping Spot Booking`,
+                        description: `Booking from ${startDate} to ${endDate} for ${number_of_guests} guests`,
                     },
                     unit_amount: unitAmount,
                 },
@@ -294,7 +316,7 @@ class PaymentService {
             }],
             mode: 'payment',
             success_url: `${frontendUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${frontendUrl}/campers/${bookingData.camper_id}`,
+            cancel_url: `${frontendUrl}/campers/${camper_id}`,
             metadata
         };
     }

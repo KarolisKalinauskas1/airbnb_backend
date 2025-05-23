@@ -137,16 +137,26 @@ app.post('/api/checkout/create-session', paymentLimiter, authenticate, async (re
         const startDate = req.body.startDate || null;
         const endDate = req.body.endDate || null;
         const guestCount = parseInt(req.body.guests || 1);
+        const baseAmount = parseFloat(req.body.baseAmount || 0);
+        const serviceFee = parseFloat(req.body.serviceFee || 0);
         const totalAmount = parseFloat(req.body.totalAmount || 0);
+        const userId = req.user?.user_id;
+
+        if (!spotId || !startDate || !endDate || !guestCount || !baseAmount || !totalAmount || !userId) {
+            throw new Error('Missing required fields for checkout');
+        }
         
         // Transform frontend data format to match backend expectations with direct assignments
         const transformedData = {
             camper_id: spotId,
-            user_id: req.user.user_id,
+            user_id: userId,
             start_date: startDate,
             end_date: endDate,
             number_of_guests: guestCount,
-            total: totalAmount
+            cost: baseAmount,
+            service_fee: serviceFee,
+            total: totalAmount,
+            spot_name: req.body.spotName
         };
         
         console.log('Transformed checkout data:', transformedData);
