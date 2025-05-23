@@ -38,13 +38,25 @@ app.use(simpleCors);
 // Mount the health check route first to avoid unnecessary middleware
 app.use('/health', healthRoutes);
 
-// Enhanced security middleware
+// Mount API routes
+app.use('/api/camping-spots', campingSpotsRoutes);
+
+// Enhanced security middleware with development-friendly settings
 app.use(helmet({
-    contentSecurityPolicy: false, // Disable CSP for debugging
+    contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: false
 }));
+
+// Ensure CORS headers are not removed by other middleware
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  next();
+});
 
 // Remove the default CORS middleware since we're using our enhanced version
 // app.use(cors({

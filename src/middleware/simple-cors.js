@@ -1,8 +1,8 @@
 // Production-ready CORS middleware with proper origin validation
-const simpleCorsMiddleware = (req, res, next) => {
-  const allowedOrigins = [
+const simpleCorsMiddleware = (req, res, next) => {  const allowedOrigins = [
     'https://airbnb-frontend-gamma.vercel.app',
     'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
+    'https://airbnb-frontend-i8p5.vercel.app',
     'http://localhost:5173',
     'http://localhost:5174'
   ];

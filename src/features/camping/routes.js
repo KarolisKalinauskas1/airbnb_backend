@@ -194,6 +194,7 @@ router.get('/', async (req, res, next) => {
 // Get a single camping spot
 router.get('/:id', async (req, res) => {
   try {
+    console.log('[camping-spots.js] Getting camping spot details for ID:', req.params.id);
     const { id } = req.params;
     const spotId = parseInt(id);
     
@@ -236,7 +237,7 @@ router.get('/:id', async (req, res) => {
     });
 
     if (!campingSpot) {
-      return res.status(404).json({ error: 'Camping spot not found' });
+      return res.status(404).json({ error: 'Camping spot not found', id: spotId });
     }
 
     // Map status IDs to human-readable names and colors
@@ -261,7 +262,22 @@ router.get('/:id', async (req, res) => {
     res.json(transformedSpot);
   } catch (error) {
     console.error('Error fetching camping spot:', error);
-    res.status(500).json({ error: 'Failed to fetch camping spot' });
+    // Check if error is a database connection issue
+    if (error instanceof PrismaClientInitializationError || 
+        error.message?.includes("Can't reach database server") || 
+        error.message?.includes("Connection refused")) {
+      return res.status(503).json({ 
+        error: 'Database connection error',
+        details: error.message,
+        id: spotId 
+      });
+    }
+    // Otherwise return a generic 500
+    res.status(500).json({ 
+      error: 'Failed to fetch camping spot',
+      details: error.message,
+      id: spotId
+    });
   }
 });
 
