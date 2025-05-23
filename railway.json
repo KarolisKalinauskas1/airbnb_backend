@@ -4,7 +4,7 @@
     "builder": "NIXPACKS",
     "buildCommand": "npm install && npx prisma generate"
   },  "deploy": {
-    "startCommand": "node deploy.js",
+    "startCommand": "npm run start:production",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 600,
     "restartPolicyType": "ON_FAILURE",
