@@ -2,9 +2,9 @@
   "name": "airbnb-backend",
   "version": "1.0.0",
   "description": "Backend for Airbnb-like camping platform",
-  "main": "src/server.js",
-  "scripts": {
-    "start": "node src/server.js",
+  "main": "src/server.js",  "scripts": {
+    "start": "node scripts/check-readiness.js && node src/server.js",
+    "start:production": "node deploy.js",
     "dev": "nodemon src/server.js",
     "test": "jest",
     "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",

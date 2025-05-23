@@ -46,9 +46,18 @@ const prisma = new PrismaClient({
 });
 
 // Handle Prisma connection errors
-prisma.$connect().catch((error) => {
-  console.error('Failed to connect to database:', error);
-  process.exit(1);
+let isDbConnected = false;
+prisma.$connect()
+  .then(() => {
+    console.log('Successfully connected to database');
+    isDbConnected = true;
+  })
+  .catch((error) => {
+    console.error('Failed to connect to database:', error);
+    // Don't exit immediately in production to allow for reconnection
+    if (process.env.NODE_ENV !== 'production') {
+      process.exit(1);
+    }
 });
 
 /**

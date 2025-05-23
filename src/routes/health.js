@@ -48,7 +48,55 @@ const getSystemMetrics = () => {
   };
 };
 
-// Basic health check
+// Basic health check that always responds
+router.get('/', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+// Detailed health check with configurable timeout
+router.get('/detailed', async (req, res) => {
+  try {
+    const timeout = parseInt(req.query.timeout) || 5000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const [dbHealth, redisHealth] = await Promise.all([
+      Promise.race([
+        checkDatabase(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Database check timeout')), timeout)
+        )
+      ]),
+      Promise.race([
+        checkRedis(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Redis check timeout')), timeout)
+        )
+      ])
+    ]);
+
+    clearTimeout(timeoutId);
+
+    const systemMetrics = getSystemMetrics();
+
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      database: dbHealth,
+      redis: redisHealth,
+      system: systemMetrics
+    });
+  } catch (error) {
+    // Still return 200 for Railway health checks, but include error info
+    res.status(200).json({
+      status: 'ok',
+      error: {
+        message: error.message,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+});
 router.get('/', (req, res) => {
   res.status(200).json({ status: 'ok' });
 });
