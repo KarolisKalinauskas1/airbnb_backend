@@ -219,7 +219,9 @@ class PaymentService {
         
         if (missingFields.length > 0) {
             throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
-        }        // Validate types - ensure numbers are properly parsed
+        }
+
+        // Validate numeric fields first
         if (isNaN(parseFloat(bookingData.total)) || parseFloat(bookingData.total) <= 0) {
             throw new Error('Invalid payment amount');
         }
@@ -227,12 +229,11 @@ class PaymentService {
         if (isNaN(parseInt(bookingData.number_of_guests)) || parseInt(bookingData.number_of_guests) <= 0) {
             throw new Error('Invalid number of guests');
         }
-          // Parse and validate dates
-        let start, end;
-        
+
+        // Parse and validate dates
         try {
-            start = new Date(bookingData.start_date);
-            end = new Date(bookingData.end_date);
+            const start = new Date(bookingData.start_date);
+            const end = new Date(bookingData.end_date);
             
             if (isNaN(start.getTime())) {
                 throw new Error('Invalid start date format');
