@@ -227,14 +227,18 @@ class PaymentService {
         if (isNaN(parseInt(bookingData.number_of_guests)) || parseInt(bookingData.number_of_guests) <= 0) {
             throw new Error('Invalid number of guests');
         }
+          // Parse and validate dates
+        let start, end;
         
-        // Parse dates with proper error handling
         try {
-            const start = new Date(bookingData.start_date);
-            const end = new Date(bookingData.end_date);
+            start = new Date(bookingData.start_date);
+            end = new Date(bookingData.end_date);
             
-            if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-                throw new Error('Invalid date format');
+            if (isNaN(start.getTime())) {
+                throw new Error('Invalid start date format');
+            }
+            if (isNaN(end.getTime())) {
+                throw new Error('Invalid end date format');
             }
             
             if (start >= end) {
@@ -243,7 +247,12 @@ class PaymentService {
             
             // Check that dates are not in the past
             const now = new Date();
-            if (start < now) {
+            now.setHours(0, 0, 0, 0); // Reset time to start of day for fair comparison
+            
+            const startDay = new Date(start);
+            startDay.setHours(0, 0, 0, 0);
+            
+            if (startDay < now) {
                 throw new Error('Start date cannot be in the past');
             }
         } catch (error) {
