@@ -3,7 +3,58 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const prisma = require('../config/prisma');
 
-// Apply authentication middleware to all routes
+// Public endpoint for review statistics - placed BEFORE authentication middleware
+router.get('/stats/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    console.log(`Getting review stats for camping spot ID: ${id}`);
+    
+    // Use a direct join approach with Prisma
+    const reviews = await prisma.review.findMany({
+      where: {
+        bookings: {
+          camper_id: parseInt(id)
+        }
+      },
+      select: {
+        rating: true
+      }
+    });
+    
+    console.log(`Direct stats query found ${reviews.length} reviews for camping spot ${id}`);
+    
+    if (reviews.length === 0) {
+      return res.json({
+        count: 0,
+        average: 0,
+        distribution: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 }
+      });
+    }
+    
+    // Calculate average rating
+    const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
+    const averageRating = totalRating / reviews.length;
+    
+    // Calculate rating distribution
+    const distribution = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    reviews.forEach(review => {
+      if (distribution[review.rating] !== undefined) {
+        distribution[review.rating]++;
+      }
+    });
+    
+    res.json({
+      count: reviews.length,
+      average: parseFloat(averageRating.toFixed(1)),
+      distribution
+    });
+  } catch (error) {
+    console.error('Review Stats Error:', error);
+    res.status(500).json({ error: 'Failed to fetch review statistics' });
+  }
+});
+
+// Apply authentication middleware to all routes AFTER the public endpoint
 router.use(authenticate);
 
 // Get all reviews for a camping spot
@@ -215,8 +266,7 @@ router.delete('/:id', async (req, res) => {
 
     res.json({ message: 'Review deleted successfully' });
   } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
+    res.status(400).json({ error: error.message });  }
 });
 
 module.exports = router;

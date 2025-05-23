@@ -4,6 +4,7 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const { paymentLimiter, authLimiter, apiLimiter } = require('./middleware/rate-limit');
+const { authenticate } = require('./middleware/auth');
 const PaymentService = require('./services/payment.service');
 
 // Import the CORS middleware options - we're using the simple one for debugging
@@ -111,9 +112,47 @@ app.get('/api/health', (req, res) => {
 });
 
 // Enhanced payment endpoint with detailed error handling
-app.post('/api/checkout/create-session', paymentLimiter, async (req, res) => {
+app.post('/api/checkout/create-session', paymentLimiter, authenticate, async (req, res) => {
     try {
-        const session = await PaymentService.createCheckoutSession(req.body);
+        // Log the request for debugging
+        console.log('Checkout session request:', {
+            body: req.body,
+            user: req.user,
+            headers: req.headers.authorization ? 'Auth header present' : 'No auth header'
+        });
+
+        // Get authenticated user info
+        if (!req.user) {
+            return res.status(401).json({
+                error: 'Authentication required',
+                message: 'You must be logged in to complete a booking'
+            });
+        }
+
+        // Request validation - ensure required fields are present
+        const { spotId, startDate, endDate, guests, baseAmount, serviceFee, totalAmount } = req.body;
+        
+        // Log exactly what we receive for each key field for debugging
+        console.log('Field values received:', {
+            spotId: spotId,
+            startDate: startDate,
+            endDate: endDate,
+            totalAmount: totalAmount
+        });
+        
+        // Transform frontend data format to match backend expectations
+        const transformedData = {
+            camper_id: parseInt(spotId),
+            user_id: parseInt(req.user.user_id),
+            start_date: startDate,
+            end_date: endDate,
+            number_of_guests: parseInt(guests || 1),
+            total: parseFloat(totalAmount || (baseAmount ? parseFloat(baseAmount) + parseFloat(serviceFee || 0) : 0))
+        };
+        
+        console.log('Transformed checkout data:', transformedData);
+        
+        const session = await PaymentService.createCheckoutSession(transformedData);
         res.json(session);
     } catch (error) {
         console.error('Payment initialization error:', error);

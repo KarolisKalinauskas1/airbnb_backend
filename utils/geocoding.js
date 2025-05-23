@@ -90,15 +90,28 @@ function saveCacheSync() {
   try {
     const fs = require('fs');
     const path = require('path');
-    const cacheDir = path.join(__dirname, '../data');
+    
+    // Use tmp directory for Railway and other containerized environments
+    // This is a common practice for cloud environments where /tmp is usually writable
+    let cacheDir;
+    
+    if (process.env.RAILWAY_ENVIRONMENT) {
+      // On Railway, use /tmp which is always writable
+      cacheDir = '/tmp';
+    } else {
+      // In local development, use the project's data directory
+      cacheDir = path.join(__dirname, '../data');
+    }
+    
     const cacheFile = path.join(cacheDir, 'geocoding-cache.json');
     
     // Create directory if it doesn't exist
     if (!fs.existsSync(cacheDir)) {
-      fs.mkdirSync(cacheDir, { recursive: true });
+      fs.mkdirSync(cacheDir, { recursive: true, mode: 0o755 });
     }
     
-    fs.writeFileSync(cacheFile, JSON.stringify(geocodingCache, null, 2));
+    fs.writeFileSync(cacheFile, JSON.stringify(geocodingCache, null, 2), { mode: 0o644 });
+    console.log(`Geocoding cache saved to ${cacheFile}`);
   } catch (error) {
     console.warn('Failed to save geocoding cache:', error.message);
   }
@@ -109,7 +122,19 @@ function loadCacheSync() {
   try {
     const fs = require('fs');
     const path = require('path');
-    const cacheFile = path.join(__dirname, '../data', 'geocoding-cache.json');
+    
+    // Use tmp directory for Railway and other containerized environments
+    let cacheDir;
+    
+    if (process.env.RAILWAY_ENVIRONMENT) {
+      // On Railway, use /tmp which is always writable
+      cacheDir = '/tmp';
+    } else {
+      // In local development, use the project's data directory
+      cacheDir = path.join(__dirname, '../data');
+    }
+    
+    const cacheFile = path.join(cacheDir, 'geocoding-cache.json');
     
     if (fs.existsSync(cacheFile)) {
       const data = fs.readFileSync(cacheFile, 'utf8');

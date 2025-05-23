@@ -210,9 +210,7 @@ class PaymentService {
                 throw error;
             }
         });
-    }
-
-    /**
+    }    /**
      * Validate booking data
      */
     static validateBookingData(bookingData) {
@@ -223,17 +221,35 @@ class PaymentService {
             throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
         }
 
-        // Validate types
-        if (typeof bookingData.total !== 'number' || bookingData.total <= 0) {
+        // Validate types - ensure numbers are properly parsed
+        if (isNaN(parseFloat(bookingData.total)) || parseFloat(bookingData.total) <= 0) {
             throw new Error('Invalid payment amount');
         }
 
-        if (typeof bookingData.number_of_guests !== 'number' || bookingData.number_of_guests <= 0) {
+        if (isNaN(parseInt(bookingData.number_of_guests)) || parseInt(bookingData.number_of_guests) <= 0) {
             throw new Error('Invalid number of guests');
         }
 
-        // Validate dates
-        const start = new Date(bookingData.start_date);
+        // Parse dates with proper error handling
+        try {
+            const start = new Date(bookingData.start_date);
+            const end = new Date(bookingData.end_date);
+            
+            if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+                throw new Error('Invalid date format');
+            }
+            
+            if (start >= end) {
+                throw new Error('End date must be after start date');
+            }
+            
+            // Check that dates are not in the past
+            if (start < new Date()) {
+                throw new Error('Start date cannot be in the past');
+            }
+        } catch (error) {
+            throw new Error(`Date validation error: ${error.message}`);
+        }
         const end = new Date(bookingData.end_date);
         
         if (isNaN(start.getTime()) || isNaN(end.getTime())) {
@@ -249,29 +265,42 @@ class PaymentService {
         if (start < now) {
             throw new Error('Start date cannot be in the past');
         }
-    }
-
-    /**
+    }    /**
      * Format session data for Stripe
      */
     static formatSessionData(bookingData) {
+        // Ensure the metadata is properly sanitized and all values are valid
         const metadata = this.sanitizeMetadata(bookingData);
 
+        // Ensure we have a valid price by parsing as float and rounding to nearest cent
+        const unitAmount = Math.round(parseFloat(bookingData.total) * 100);
+        
+        // Provide a fallback name if none is provided
+        const spotName = bookingData.spot_name || `Camping Spot #${bookingData.camper_id}`;
+        
+        // Get frontend URL from environment variable with fallback
+        const frontendUrl = process.env.FRONTEND_URL || 'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app';
+        
+        // Properly format dates for display
+        const startDate = new Date(bookingData.start_date).toLocaleDateString();
+        const endDate = new Date(bookingData.end_date).toLocaleDateString();
+        
         return {
             payment_method_types: ['card'],
             line_items: [{
                 price_data: {
                     currency: 'eur',
                     product_data: {
-                        name: bookingData.spot_name || 'Camping Spot Booking',
+                        name: spotName,
+                        description: `Booking from ${startDate} to ${endDate} for ${bookingData.number_of_guests} guests`,
                     },
-                    unit_amount: Math.round(bookingData.total * 100),
+                    unit_amount: unitAmount,
                 },
                 quantity: 1,
             }],
             mode: 'payment',
-            success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`,
+            success_url: `${frontendUrl}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${frontendUrl}/campers/${bookingData.camper_id}`,
             metadata
         };
     }
