@@ -219,16 +219,16 @@ class PaymentService {
         
         if (missingFields.length > 0) {
             throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
-        }
-
-        // Validate types - ensure numbers are properly parsed
+        }        // Validate types - ensure numbers are properly parsed
         if (isNaN(parseFloat(bookingData.total)) || parseFloat(bookingData.total) <= 0) {
             throw new Error('Invalid payment amount');
         }
 
         if (isNaN(parseInt(bookingData.number_of_guests)) || parseInt(bookingData.number_of_guests) <= 0) {
             throw new Error('Invalid number of guests');
-        }        // Parse dates with proper error handling
+        }
+        
+        // Parse dates with proper error handling
         try {
             const start = new Date(bookingData.start_date);
             const end = new Date(bookingData.end_date);
