@@ -129,26 +129,27 @@ app.post('/api/checkout/create-session', paymentLimiter, authenticate, async (re
             });
         }
 
-        // Request validation - ensure required fields are present
-        const { spotId, startDate, endDate, guests, baseAmount, serviceFee, totalAmount } = req.body;
+        // Debug exactly what fields we have for better troubleshooting
+        console.log('Request body raw:', JSON.stringify(req.body, null, 2));
         
-        // Log exactly what we receive for each key field for debugging
-        console.log('Field values received:', {
-            spotId: spotId,
-            startDate: startDate,
-            endDate: endDate,
-            totalAmount: totalAmount
-        });
+        // Extract fields directly with proper typing and fallbacks
+        const spotId = parseInt(req.body.spotId || 0);
+        const startDate = req.body.startDate || null;
+        const endDate = req.body.endDate || null;
+        const guestCount = parseInt(req.body.guests || 1);
+        const totalAmount = parseFloat(req.body.totalAmount || 0);
         
-        // Transform frontend data format to match backend expectations
+        // Transform frontend data format to match backend expectations with direct assignments
         const transformedData = {
-            camper_id: parseInt(spotId),
-            user_id: parseInt(req.user.user_id),
+            camper_id: spotId,
+            user_id: req.user.user_id,
             start_date: startDate,
             end_date: endDate,
-            number_of_guests: parseInt(guests || 1),
-            total: parseFloat(totalAmount || (baseAmount ? parseFloat(baseAmount) + parseFloat(serviceFee || 0) : 0))
+            number_of_guests: guestCount,
+            total: totalAmount
         };
+        
+        console.log('Transformed checkout data:', transformedData);
         
         console.log('Transformed checkout data:', transformedData);
         

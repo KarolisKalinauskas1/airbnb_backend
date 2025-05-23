@@ -91,29 +91,30 @@ function saveCacheSync() {
     const fs = require('fs');
     const path = require('path');
     
-    // Use tmp directory for Railway and other containerized environments
-    // This is a common practice for cloud environments where /tmp is usually writable
-    let cacheDir;
-    
-    if (process.env.RAILWAY_ENVIRONMENT) {
-      // On Railway, use /tmp which is always writable
-      cacheDir = '/tmp';
-    } else {
-      // In local development, use the project's data directory
-      cacheDir = path.join(__dirname, '../data');
-    }
-    
+    // Always use /tmp for Railway deployment environments
+    const cacheDir = '/tmp';
     const cacheFile = path.join(cacheDir, 'geocoding-cache.json');
     
-    // Create directory if it doesn't exist
+    // Create directory if it doesn't exist - with permissive mode
     if (!fs.existsSync(cacheDir)) {
-      fs.mkdirSync(cacheDir, { recursive: true, mode: 0o755 });
+      try {
+        fs.mkdirSync(cacheDir, { recursive: true, mode: 0o777 });
+      } catch (dirError) {
+        console.warn('Failed to create cache directory, using memory cache only:', dirError.message);
+        return;
+      }
     }
     
-    fs.writeFileSync(cacheFile, JSON.stringify(geocodingCache, null, 2), { mode: 0o644 });
-    console.log(`Geocoding cache saved to ${cacheFile}`);
+    // Use try/catch for the actual write operation
+    try {
+      fs.writeFileSync(cacheFile, JSON.stringify(geocodingCache, null, 2), { mode: 0o666 });
+      console.log(`Successfully saved geocoding cache to ${cacheFile}`);
+    } catch (writeError) {
+      console.warn('Failed to write geocoding cache file:', writeError.message);
+    }
   } catch (error) {
     console.warn('Failed to save geocoding cache:', error.message);
+    // Continue execution - geocoding will still work, just without caching
   }
 }
 
@@ -123,29 +124,26 @@ function loadCacheSync() {
     const fs = require('fs');
     const path = require('path');
     
-    // Use tmp directory for Railway and other containerized environments
-    let cacheDir;
-    
-    if (process.env.RAILWAY_ENVIRONMENT) {
-      // On Railway, use /tmp which is always writable
-      cacheDir = '/tmp';
-    } else {
-      // In local development, use the project's data directory
-      cacheDir = path.join(__dirname, '../data');
-    }
-    
+    // Always use /tmp for Railway deployment environments
+    const cacheDir = '/tmp';
     const cacheFile = path.join(cacheDir, 'geocoding-cache.json');
     
     if (fs.existsSync(cacheFile)) {
-      const data = fs.readFileSync(cacheFile, 'utf8');
-      const loadedCache = JSON.parse(data);
-      
-      // Copy loaded cache to our cache object
-      Object.assign(geocodingCache, loadedCache);
-      console.log(`Loaded ${Object.keys(loadedCache).length} geocoding entries from cache`);
+      try {
+        const data = fs.readFileSync(cacheFile, 'utf8');
+        const loadedCache = JSON.parse(data);
+        
+        // Copy loaded cache to our cache object
+        Object.assign(geocodingCache, loadedCache);
+        console.log(`Loaded ${Object.keys(loadedCache).length} geocoding entries from cache`);
+      } catch (readError) {
+        console.warn('Failed to read geocoding cache file:', readError.message);
+        // Continue with empty cache
+      }
     }
   } catch (error) {
     console.warn('Failed to load geocoding cache:', error.message);
+    // Continue with empty cache - geocoding will still work
   }
 }
 
