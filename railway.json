@@ -3,7 +3,7 @@
     "builder": "DOCKERFILE",
     "dockerfile": "Dockerfile"
   },  "deploy": {
-    "startCommand": "node ./scripts/start-production.js",
+    "startCommand": "node /app/scripts/start-production.js",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 600,
     "restartPolicyType": "ON_FAILURE",
