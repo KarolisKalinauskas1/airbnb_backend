@@ -37,6 +37,10 @@ WORKDIR /app
 
 ENV NODE_ENV production
 
+# Create user first
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 expressjs
+
 # Copy node_modules and other files
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
@@ -51,10 +55,12 @@ COPY --from=builder /app/src ./src
 COPY --from=builder /app/server.js ./server.js
 COPY --from=builder /app/vercel-server.js ./vercel-server.js
 
-# Don't run as root
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 expressjs
+# Set proper permissions
+RUN chown -R expressjs:nodejs /app
 USER expressjs
+
+# Generate Prisma Client as the expressjs user
+RUN npx prisma generate
 
 # Expose the port
 EXPOSE 3000

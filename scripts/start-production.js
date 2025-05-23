@@ -24,24 +24,14 @@ async function waitForDatabase(maxRetries = 10, backoffMs = 1000) {
 async function main() {
   try {
     // Ensure we're in the app root directory
-    process.chdir(path.join(__dirname, '..'));
-
-    // Wait for database to be available
+    process.chdir(path.join(__dirname, '..'));    // Wait for database to be available
     console.log('Checking database connection...');
     if (!await waitForDatabase()) {
       throw new Error('Could not connect to database after multiple retries');
-    }    // Generate Prisma Client without running migrations
-    console.log('Generating Prisma Client...');
-    await new Promise((resolve, reject) => {
-      const generate = spawn('npx', ['prisma', 'generate'], {
-        stdio: 'inherit'
-      });
-      
-      generate.on('close', code => {
-        if (code === 0) resolve();
-        else reject(new Error(`Prisma Client generation failed with code ${code}`));
-      });
-    });
+    }
+
+    // Skip Prisma generation as it's done during build
+    console.log('Using pre-generated Prisma Client...');
 
     // Start the server
     console.log('Starting server...');
