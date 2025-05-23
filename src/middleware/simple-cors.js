@@ -12,7 +12,7 @@ const simpleCorsMiddleware = (req, res, next) => {
   
   // Log the request for debugging
   console.log(`CORS: Request from ${origin} to ${req.method} ${req.path} (${isAllowedOrigin ? 'allowed' : 'blocked'})`);
-    // Set CORS headers for allowed origins
+  // Set CORS headers for allowed origins
   if (isAllowedOrigin) {
     // Log detailed request information for debugging
     console.log('Request details:', {
@@ -31,10 +31,14 @@ const simpleCorsMiddleware = (req, res, next) => {
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
     res.header('Access-Control-Allow-Credentials', 'true');
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    return res.status(204).send();
+
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+      return res.status(204).send();
+    }
+  } else {
+    // Log blocked request
+    console.warn('CORS: Blocked request from unauthorized origin:', origin);
   }
   
   next();
