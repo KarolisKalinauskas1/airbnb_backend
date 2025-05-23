@@ -228,9 +228,7 @@ class PaymentService {
 
         if (isNaN(parseInt(bookingData.number_of_guests)) || parseInt(bookingData.number_of_guests) <= 0) {
             throw new Error('Invalid number of guests');
-        }
-
-        // Parse dates with proper error handling
+        }        // Parse dates with proper error handling
         try {
             const start = new Date(bookingData.start_date);
             const end = new Date(bookingData.end_date);
@@ -244,28 +242,14 @@ class PaymentService {
             }
             
             // Check that dates are not in the past
-            if (start < new Date()) {
+            const now = new Date();
+            if (start < now) {
                 throw new Error('Start date cannot be in the past');
             }
         } catch (error) {
             throw new Error(`Date validation error: ${error.message}`);
         }
-        const end = new Date(bookingData.end_date);
-        
-        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-            throw new Error('Invalid dates');
-        }
-        
-        if (end <= start) {
-            throw new Error('End date must be after start date');
-        }
-
-        // Validate past dates
-        const now = new Date();
-        if (start < now) {
-            throw new Error('Start date cannot be in the past');
-        }
-    }    /**
+    }/**
      * Format session data for Stripe
      */
     static formatSessionData(bookingData) {
