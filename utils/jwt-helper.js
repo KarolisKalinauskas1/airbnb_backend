@@ -16,10 +16,12 @@ function generateToken(user, options = {}) {
   const expiresIn = options.expiresIn || '7d'; // Default to 7 days
   
   const payload = {
-    id: user.user_id,
+    sub: user.user_id.toString(), // sub must be string
+    user_id: user.user_id,
     email: user.email,
-    isowner: user.isowner,
-    sub: user.user_id.toString() // JWT standard subject field
+    full_name: user.full_name,
+    isowner: Number(user.isowner),
+    verified: user.verified
   };
   
   return jwt.sign(payload, JWT_SECRET, { expiresIn });

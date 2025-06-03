@@ -1,94 +1,86 @@
-const Joi = require('joi');
+const { z } = require('zod');
 
 /**
  * Generic validation middleware factory
- * @param {Object} schema - Joi schema for request validation
+ * @param {Object} schema - Zod schema for request validation
  * @param {string} type - Request part to validate ('body', 'query', 'params')
  */
 const validate = (schema, type = 'body') => {
   return (req, res, next) => {
-    const validationResult = schema.validate(req[type], {
-      abortEarly: false,
-      stripUnknown: true,
-      allowUnknown: true
-    });
+    try {
+      // Log incoming request data in development
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`Validating ${type} data:`, req[type]);
+      }
 
-    if (validationResult.error) {
-      const errors = validationResult.error.details.map(detail => ({
-        field: detail.path.join('.'),
-        message: detail.message,
-        type: detail.type
-      }));
-
-      return res.status(400).json({
+      const result = schema.parse(req[type]);
+      // Replace request data with validated data
+      req[type] = result;
+      next();
+    } catch (error) {
+      console.error('Validation error:', error);
+      
+      // Create a user-friendly error response
+      const validationError = {
         error: 'Validation Error',
         message: 'Invalid request data',
-        details: errors
-      });
-    }
+        details: error.errors.map(err => ({
+          field: err.path.join('.'),
+          message: err.message,
+          code: err.code
+        }))
+      };
 
-    // Replace request data with validated data
-    req[type] = validationResult.value;
-    next();
+      return res.status(400).json(validationError);
+    }
   };
 };
 
 // Common validation schemas
 const commonSchemas = {
-  id: Joi.number().integer().positive(),
-  email: Joi.string().email(),
-  password: Joi.string().min(8).max(100),
-  date: Joi.date().iso(),
-  price: Joi.number().min(0),
-  coordinates: Joi.object({
-    latitude: Joi.number().min(-90).max(90).required(),
-    longitude: Joi.number().min(-180).max(180).required()
+  id: z.number().positive(),
+  email: z.string().email(),
+  password: z.string().min(8).max(100),
+  date: z.string().datetime(),
+  price: z.number().min(0),
+  coordinates: z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180)
   }),
-  pagination: Joi.object({
-    page: Joi.number().integer().min(1).default(1),
-    limit: Joi.number().integer().min(1).max(100).default(10)
+  pagination: z.object({
+    page: z.number().int().min(1).default(1),
+    limit: z.number().int().min(1).max(100).default(10)
   })
 };
 
 // API-specific schemas
 const schemas = {
   camping: {
-    create: Joi.object({
-      title: Joi.string().required().min(3).max(100),
-      description: Joi.string().required().min(10),
-      price_per_night: Joi.number().required().min(0),
-      max_guests: Joi.number().integer().required().min(1),
+    create: z.object({
+      title: z.string().min(3).max(100),
+      description: z.string().min(10),
+      price_per_night: z.number().min(0),
+      max_guests: z.number().int().min(1),
       location: commonSchemas.coordinates,
-      amenities: Joi.array().items(commonSchemas.id)
+      amenities: z.array(commonSchemas.id)
     }),
-    search: Joi.object({
-      query: Joi.string().min(2),
-      minPrice: Joi.number().min(0),
-      maxPrice: Joi.number().min(0),
-      guests: Joi.number().integer().min(1),
-      startDate: commonSchemas.date,
-      endDate: commonSchemas.date,
-      ...commonSchemas.pagination
+    search: z.object({
+      query: z.string().min(2).optional(),
+      minPrice: z.number().min(0).optional(),
+      maxPrice: z.number().min(0).optional(),
+      guests: z.number().int().min(1).optional(),
+      startDate: commonSchemas.date.optional(),
+      endDate: commonSchemas.date.optional(),
+      page: commonSchemas.pagination.shape.page,
+      limit: commonSchemas.pagination.shape.limit
     })
   },
   booking: {
-    create: Joi.object({
-      camping_spot_id: commonSchemas.id.required(),
-      start_date: commonSchemas.date.required(),
-      end_date: commonSchemas.date.required(),
-      guest_count: Joi.number().integer().min(1).required()
-    })
-  },
-  auth: {
-    register: Joi.object({
-      email: commonSchemas.email.required(),
-      password: commonSchemas.password.required(),
-      full_name: Joi.string().required().min(2).max(100),
-      is_seller: Joi.boolean()
-    }),
-    login: Joi.object({
-      email: commonSchemas.email.required(),
-      password: commonSchemas.password.required()
+    create: z.object({
+      camping_spot_id: commonSchemas.id,
+      start_date: commonSchemas.date,
+      end_date: commonSchemas.date,
+      guest_count: z.number().int().min(1)
     })
   }
 };

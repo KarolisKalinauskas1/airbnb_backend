@@ -349,7 +349,7 @@ model bookings {
   created_at                 DateTime                   @db.Date
   camping_spot               camping_spot               @relation(fields: [camper_id], references: [camping_spot_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bookings_campers")
   status_booking_transaction status_booking_transaction @relation(fields: [status_id], references: [status_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_booking_status")
-  users                      public_users               @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bookins_users")
+  users                      users                      @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_bookins_users")
   review                     review?
   transaction                transaction[]
 
@@ -400,7 +400,7 @@ model country {
 model images {
   image_id     Int          @id @default(autoincrement())
   camping_id   Int
-  image_url    String       @db.VarChar(45)
+  image_url    String       @db.VarChar(255)
   created_at   DateTime     @db.Date
   camping_spot camping_spot @relation(fields: [camping_id], references: [camping_spot_id], onDelete: NoAction, onUpdate: NoAction, map: "fk_images_campings")
 
@@ -434,14 +434,14 @@ model owner {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model review {
-  review_id  Int          @id @default(autoincrement())
-  booking_id Int          @unique
+  review_id  Int      @id @default(autoincrement())
+  booking_id Int      @unique
   user_id    Int
   rating     Int
-  comment    String?      @db.VarChar(45)
-  created_at DateTime     @db.Date
-  bookings   bookings     @relation(fields: [booking_id], references: [booking_id], onDelete: NoAction, onUpdate: NoAction)
-  users      public_users @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction)
+  comment    String?  @db.VarChar(45)
+  created_at DateTime @db.Date
+  bookings   bookings @relation(fields: [booking_id], references: [booking_id], onDelete: NoAction, onUpdate: NoAction)
+  users      users    @relation(fields: [user_id], references: [user_id], onDelete: NoAction, onUpdate: NoAction)
 
   @@schema("public")
 }
@@ -469,18 +469,16 @@ model transaction {
   @@schema("public")
 }
 
-/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
-model public_users {
-  user_id      Int        @id @default(autoincrement())
-  full_name    String     @db.VarChar(45)
-  email        String     @unique @db.VarChar(45)
-  verified     String     @db.VarChar(45)  
-  isowner      String     @db.VarChar(1) @default("0")
-  created_at   DateTime   @db.Date
-  updated_at   DateTime   @db.Date
-  auth_user_id String?    @db.VarChar(36)
-  bookings     bookings[]
-  review       review[]
+model users {
+  user_id    Int        @id @default(autoincrement())
+  full_name  String     @db.VarChar(45)
+  email      String     @unique @db.VarChar(45)
+  verified   String     @db.VarChar(45)
+  isowner    String?    @db.VarChar(1)
+  created_at DateTime   @db.Date
+  updated_at DateTime   @db.Date
+  bookings   bookings[]
+  review     review[]
 
   @@map("users")
   @@schema("public")

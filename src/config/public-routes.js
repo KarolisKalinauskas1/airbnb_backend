@@ -9,81 +9,58 @@ const publicRoutes = [
     '/api/auth/login',
     '/api/auth/register',
     '/api/auth/reset-password',
-    '/api/auth/update-password',
     '/api/auth/refresh-token',
-    '/api/auth/status',
-    '/api/auth/session',
-    '/api/auth/restore-session',
-    '/api/auth/verify-token',
-    '/api/auth/sync-session',
-    '/api/auth/logout',
-    '/api/auth/signout',
-
-    // Public camping spot endpoints
-    '/api/camping-spots',
-    '/api/camping-spots/search',
-    '/api/camping-spots/featured',
-    '/api/camping-spots/popular',
-    
-    // Public amenities endpoints
-    '/api/amenities',
-    '/api/camping-spots/amenities',
-    '/api/camping-spots/countries',
     
     // Health check endpoints
     '/api/health',
-    '/api/status'
+    '/health',
+    '/status',
+    
+    // Public amenities and countries endpoints - all variations
+    '/api/amenities',
+    '/api/countries',
+    '/api/camping-spots/amenities',
+    '/api/camping-spots/countries',
+    '/camping-spots/amenities',
+    '/camping-spots/countries',
+    '/amenities',
+    '/countries'
 ];
 
 const publicPatterns = [
     // Auth routes with dynamic parameters
-    /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|update\-password|refresh\-token)(\?.*)?$/,
-    /^\/?(api\/)?auth\/oauth\/google\/(login|callback|supabase-callback)(\?.*)?$/,
-    /^\/social-auth-success(\?.*)?$/,
+    /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|refresh\-token)(\?.*)?$/i,
     
-    // Camping spot details with IDs
-    /^\/?(api\/)?camping-spots\/\d+$/,
-    /^\/?(api\/)?camping-spots\/\d+\/reviews$/,
+    // Amenities and countries endpoints with optional /api/ prefix
+    /^\/?(api\/)?(amenities|countries)(\?.*)?$/i,
+    /^\/?(api\/)?(camping-spots\/)(amenities|countries)(\?.*)?$/i,
     
-    // Search with parameters
-    /^\/?(api\/)?camping-spots\/search\?/,
-    /^\/?(api\/)?camping-spots\/filter\?/
+    // Health and status endpoints with optional /api/ prefix
+    /^\/?(api\/)?(health|status)(\?.*)?$/i
 ];
+
+/**
+ * Check if a route is public
+ * @param {string} path - The route path to check
+ * @returns {boolean}
+ */
+const isPublicRoute = (path) => {
+    // Normalize path by removing leading/trailing slashes and optional /api/ prefix
+    const normalizedPath = path.toLowerCase()
+        .replace(/^\/+|\/+$/g, '')  // Remove leading/trailing slashes
+        .replace(/^api\//, '');      // Remove api/ prefix if present
+    
+    // Check exact matches first
+    if (publicRoutes.some(route => route.toLowerCase().replace(/^\/+|\/+$/g, '').replace(/^api\//, '') === normalizedPath)) {
+        return true;
+    }
+
+    // Then check pattern matches
+    return publicPatterns.some(pattern => pattern.test(path));
+};
 
 module.exports = {
     publicRoutes,
     publicPatterns,
-    
-    /**
-     * Check if a route is public
-     * @param {string} path - The route path to check
-     * @param {string} method - The HTTP method (GET, POST, etc)
-     * @returns {boolean}
-     */
-    isPublicRoute: (path, method) => {
-        // Always allow OPTIONS requests (CORS)
-        if (method === 'OPTIONS') {
-            return true;
-        }
-
-        // Normalize path
-        const normalizedPath = path.toLowerCase();
-
-        // Check exact matches
-        if (publicRoutes.includes(normalizedPath)) {
-            return true;
-        }
-
-        // Check patterns
-        if (publicPatterns.some(pattern => pattern.test(normalizedPath))) {
-            return true;
-        }
-
-        // Special case: GET requests to camping spots are public
-        if (method === 'GET' && normalizedPath.startsWith('/api/camping-spots')) {
-            return true;
-        }
-
-        return false;
-    }
+    isPublicRoute
 };

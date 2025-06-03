@@ -2,8 +2,10 @@
 /**
  * User Registration Fix Script
  * 
- * This script bypasses the normal registration flow to directly create
- * a user in both the auth system and the public_users database table.
+ * This script helps fix user registration issues by:
+ * 1. Creating test users manually
+ * 2. Syncing all users from Supabase Auth to the public users table
+ * 3. Fixing specific users by email
  * 
  * Usage: node scripts/fix-user-registration.js
  */
@@ -95,7 +97,7 @@ async function fixUserRegistration() {
       });
       
       // Check for important fields
-      const requiredFields = ['user_id', 'email', 'full_name', 'verified', 'isowner', 'created_at', 'updated_at', 'auth_user_id'];
+      const requiredFields = ['user_id', 'email', 'full_name', 'verified', 'isowner', 'created_at', 'updated_at'];
       const missingFields = requiredFields.filter(field => 
         !publicUsersSchema.some(col => col.column_name === field)
       );
@@ -104,6 +106,12 @@ async function fixUserRegistration() {
         console.warn(`⚠️ Missing fields in public_users table: ${missingFields.join(', ')}`);
       } else {
         console.log('✅ All required fields found in public_users table');
+      }
+      
+      // Check for auth_user_id field (optional but recommended)
+      if (!publicUsersSchema.some(col => col.column_name === 'auth_user_id')) {
+        console.log('ℹ️ Note: The auth_user_id field is not present in the users table.');
+        console.log('    This is not required, but adding it would improve user management.');
       }
       
       // Check owner table and relationship
@@ -128,164 +136,431 @@ async function fixUserRegistration() {
       return;
     }
     
-    // Create a test user
-    console.log('\n3. Creating a test user...');
+    // Offer various operations
+    console.log('\n3. Choose an operation:');
+    console.log('1. Create a new test user');
+    console.log('2. Sync all Supabase users to public users table');
+    console.log('3. Fix a specific user by email');
+    console.log('4. Exit');
     
-    // Get user details
-    const name = await prompt('Enter full name for test user: ');
-    const email = await prompt('Enter email for test user: ');
-    const password = await prompt('Enter password for test user: ');
-    const isowner = (await prompt('Should this user be an owner? (y/n): ')).toLowerCase() === 'y';
+    const operation = await prompt('Enter your choice (1-4): ');
     
-    console.log('\nCreating user with the following details:');
-    console.log(`- Name: ${name}`);
-    console.log(`- Email: ${email}`);
-    console.log(`- Password: ${'*'.repeat(password.length)}`);
-    console.log(`- Owner: ${isowner ? 'Yes' : 'No'}`);
-    
-    const confirmCreate = await prompt('\nProceed with user creation? (y/n): ');
-    if (confirmCreate.toLowerCase() !== 'y') {
-      console.log('User creation canceled');
-      return;
-    }
-    
-    // Step 1: Create user in Supabase Auth
-    console.log('\nStep 1: Creating user in Supabase Auth...');
-    
-    let authUser;
-    try {
-      // Try with admin API if available (service role)
-      if (hasAdminAccess) {
-        const { data, error } = await supabase.auth.admin.createUser({
-          email,
-          password,
-          email_confirm: true,
-          user_metadata: { full_name: name, isowner: isowner ? 1 : 0 }
+    if (operation === '1') {
+      // Create a new user
+      console.log('\n--- Create New User ---');
+      
+      // Get user details
+      const name = await prompt('Enter full name for test user: ');
+      const email = await prompt('Enter email for test user: ');
+      const password = await prompt('Enter password for test user: ');
+      const isowner = (await prompt('Should this user be an owner? (y/n): ')).toLowerCase() === 'y';
+      
+      console.log('\nCreating user with the following details:');
+      console.log(`- Name: ${name}`);
+      console.log(`- Email: ${email}`);
+      console.log(`- Password: ${'*'.repeat(password.length)}`);
+      console.log(`- Owner: ${isowner ? 'Yes' : 'No'}`);
+      
+      const confirmCreate = await prompt('\nProceed with user creation? (y/n): ');
+      if (confirmCreate.toLowerCase() !== 'y') {
+        console.log('User creation canceled');
+        return;
+      }
+      
+      // Step 1: Create user in Supabase Auth
+      console.log('\nStep 1: Creating user in Supabase Auth...');
+      
+      let authUser;
+      try {
+        // Try with admin API if available (service role)
+        if (hasAdminAccess) {
+          const { data, error } = await supabase.auth.admin.createUser({
+            email,
+            password,
+            email_confirm: true,
+            user_metadata: { full_name: name, isowner: isowner ? 1 : 0 }
+          });
+          
+          if (error) throw error;
+          authUser = data;
+        } else {
+          // Fallback to regular signup
+          const { data, error } = await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                full_name: name,
+                isowner: isowner ? 1 : 0
+              }
+            }
+          });
+          
+          if (error) throw error;
+          authUser = data;
+        }
+        
+        console.log('✅ User created in Supabase Auth');
+      } catch (authError) {
+        // Check if user already exists
+        if (authError.message?.includes('already exists')) {
+          console.log('⚠️ User already exists in Supabase Auth');
+          // Try to get existing user
+          const { data, error } = await supabase.auth.admin.getUserByEmail(email);
+          if (error) {
+            console.error('❌ Failed to fetch existing user:', error.message);
+            return;
+          }
+          authUser = data;
+        } else {
+          console.error('❌ Failed to create user in Supabase Auth:', authError.message);
+          return;
+        }
+      }
+      
+      // Step 2: Create user in our database
+      console.log('\nStep 2: Creating user in public_users table...');
+      
+      try {
+        // Check if user already exists
+        const existingUser = await prisma.users.findFirst({
+          where: { email }
         });
         
-        if (error) throw error;
-        authUser = data;
-      } else {
-        // Fallback to regular signup
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: { full_name: name, isowner: isowner ? 1 : 0 }
+        if (existingUser) {
+          console.log('⚠️ User already exists in the database with ID:', existingUser.user_id);
+          return;
+        }
+        
+        // Create new user
+        const newUser = await prisma.users.create({
+          data: {
+            email,
+            full_name: name,
+            verified: 'yes',
+            isowner: isowner ? '1' : '0',
+            created_at: new Date(),
+            updated_at: new Date()
           }
         });
         
-        if (error) throw error;
-        authUser = data;
-      }
-      
-      console.log(`✅ Auth user created successfully with ID: ${authUser.user.id}`);
-    } catch (authError) {
-      console.error('❌ Failed to create auth user:', authError.message);
-      
-      // Check if user already exists
-      console.log('\nChecking if user already exists in auth...');
-      try {
-        // Try to sign in to see if user exists
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        });
+        console.log(`✅ User created in database with ID: ${newUser.user_id}`);
         
-        if (!error && data && data.user) {
-          console.log(`✅ User already exists in auth with ID: ${data.user.id}`);
-          authUser = data;
-        } else {
-          console.error('❌ Could not verify existing user:', error?.message || 'Unknown error');
-          return;
-        }
-      } catch (signInError) {
-        console.error('❌ Failed to check existing user:', signInError.message);
-        return;
-      }
-    }
-    
-    // Step 2: Create user in public_users table
-    console.log('\nStep 2: Creating user in public_users table...');
-    
-    try {
-      // Check if user already exists in public_users
-      const existingUser = await prisma.public_users.findUnique({
-        where: { email }
-      });
-      
-      if (existingUser) {
-        console.log(`✅ User already exists in public_users with ID: ${existingUser.user_id}`);
-        
-        // Update auth_user_id if it's missing
-        if (!existingUser.auth_user_id && authUser?.user?.id) {
-          await prisma.public_users.update({
-            where: { user_id: existingUser.user_id },
-            data: { auth_user_id: authUser.user.id }
-          });
-          console.log('✅ Updated auth_user_id for existing user');
+        // Step 3: Create owner record if needed
+        if (isowner) {
+          console.log('\nStep 3: Creating owner record...');
+          
+          try {
+            await prisma.owner.create({
+              data: {
+                owner_id: newUser.user_id,
+                license: 'test-license'
+              }
+            });
+            console.log('✅ Owner record created');
+          } catch (ownerError) {
+            console.error('❌ Failed to create owner record:', ownerError.message);
+          }
         }
         
+        console.log('\n✅ User creation complete!');
+        console.log(`Email: ${email}`);
+        console.log(`Password: ${password}`);
+        console.log('You can now log in with these credentials.');
+        
+      } catch (dbError) {
+        console.error('❌ Failed to create user in database:', dbError.message);
+        
+        // Try to rollback Supabase user creation
+        if (hasAdminAccess && authUser?.user?.id) {
+          console.log('Attempting to rollback Supabase user creation...');
+          
+          try {
+            await supabase.auth.admin.deleteUser(authUser.user.id);
+            console.log('✅ Rolled back Supabase user creation');
+          } catch (rollbackError) {
+            console.error('❌ Failed to rollback Supabase user:', rollbackError.message);
+          }
+        }
+      }
+    } else if (operation === '2') {
+      // Sync all users
+      console.log('\n--- Sync All Users ---');
+      
+      if (!hasAdminAccess) {
+        console.error('❌ This operation requires admin access (service role key)');
         return;
       }
       
-      // Create new user in public_users
-      const now = new Date();
+      // Get all users from Supabase Auth
+      console.log('Fetching all users from Supabase Auth...');
+      const { data: authUsers, error: listError } = await supabase.auth.admin.listUsers();
+      if (listError) {
+        console.error('❌ Failed to list Supabase users:', listError.message);
+        return;
+      }
       
-      const newUser = await prisma.public_users.create({
-        data: {
-          full_name: name,
-          email,
-          verified: "true",
-          isowner: isowner ? 1 : 0,
-          created_at: now,
-          updated_at: now,
-          auth_user_id: authUser.user.id
-        }
+      console.log(`Found ${authUsers.users.length} users in Supabase Auth`);
+      
+      // Get all users from public_users table
+      console.log('Fetching all users from public_users table...');
+      const dbUsers = await prisma.users.findMany({
+        select: { email: true, user_id: true }
       });
       
-      console.log(`✅ User created in public_users with ID: ${newUser.user_id}`);
+      console.log(`Found ${dbUsers.length} users in public_users table`);
       
-      // If user is an owner, create owner record
-      if (isowner) {
-        console.log('\nStep 3: Creating owner record...');
+      // Find users in Supabase but not in DB
+      const dbEmails = new Set(dbUsers.map(u => u.email.toLowerCase()));
+      const missingUsers = authUsers.users.filter(u => !dbEmails.has(u.email.toLowerCase()));
+      
+      console.log(`Found ${missingUsers.length} users missing from public_users table`);
+      
+      if (missingUsers.length === 0) {
+        console.log('✅ All users are already synchronized');
+        return;
+      }
+      
+      const confirmSync = await prompt(`Proceed with creating ${missingUsers.length} users in the database? (y/n): `);
+      if (confirmSync.toLowerCase() !== 'y') {
+        console.log('Sync canceled');
+        return;
+      }
+      
+      console.log('\nCreating missing users in public_users table:');
+      
+      let successCount = 0;
+      let errorCount = 0;
+      
+      for (const authUser of missingUsers) {
         try {
-          await prisma.owner.create({
+          // Create user in public_users
+          const newUser = await prisma.users.create({
             data: {
-              owner_id: newUser.user_id,
-              license: 'DEFAULT-LICENSE'
+              email: authUser.email,
+              full_name: authUser.user_metadata?.full_name || authUser.email.split('@')[0],
+              verified: authUser.email_confirmed_at ? 'yes' : 'no',
+              isowner: authUser.user_metadata?.isowner === 1 || authUser.user_metadata?.isowner === '1' ? '1' : '0',
+              created_at: new Date(),
+              updated_at: new Date()
             }
           });
-          console.log('✅ Owner record created successfully');
-        } catch (ownerError) {
-          console.error('❌ Failed to create owner record:', ownerError.message);
-          console.log('You may need to manually create the owner record');
+          
+          console.log(`✅ Created user: ${authUser.email} (ID: ${newUser.user_id})`);
+          successCount++;
+          
+          // If user is an owner, create owner record
+          if (authUser.user_metadata?.isowner === 1 || authUser.user_metadata?.isowner === '1') {
+            try {
+              await prisma.owner.create({
+                data: {
+                  owner_id: newUser.user_id,
+                  license: 'auto-created'
+                }
+              });
+              console.log(`  ✅ Created owner record for user: ${authUser.email}`);
+            } catch (ownerError) {
+              if (ownerError.code === 'P2002') {
+                console.warn(`  ⚠️ Owner record already exists for ID ${newUser.user_id}`);
+              } else {
+                console.warn(`  ⚠️ Failed to create owner record: ${ownerError.message}`);
+              }
+            }
+          }
+        } catch (userError) {
+          console.error(`❌ Failed to create user ${authUser.email}: ${userError.message}`);
+          errorCount++;
         }
       }
       
-      console.log('\n✅ USER CREATED SUCCESSFULLY');
-      console.log('\nUser details:');
-      console.log(`- Auth ID: ${authUser.user.id}`);
-      console.log(`- User ID: ${newUser.user_id}`);
-      console.log(`- Email: ${email}`);
-      console.log(`- Full Name: ${name}`);
-      console.log(`- Is Owner: ${isowner ? 'Yes' : 'No'}`);
-      console.log('\nYou can now try logging in with these credentials');
+      console.log(`\n✅ Sync complete: ${successCount} users created, ${errorCount} failures`);
+    } else if (operation === '3') {
+      // Fix specific user
+      console.log('\n--- Fix Specific User ---');
       
-    } catch (dbError) {
-      console.error('❌ Failed to create user in database:', dbError.message);
-      console.log('Error details:', dbError);
+      const email = await prompt('Enter email of user to fix: ');
+      console.log(`\nLooking up user: ${email}...`);
+      
+      // Check if user exists in Supabase
+      console.log('Checking Supabase Auth...');
+      const { data: authUser, error: authError } = await supabase.auth.admin.getUserByEmail(email);
+      
+      if (authError || !authUser?.user) {
+        console.error('❌ User not found in Supabase Auth');
+        const createInSupabase = await prompt('Do you want to create this user in Supabase Auth? (y/n): ');
+        
+        if (createInSupabase.toLowerCase() === 'y') {
+          const password = await prompt('Enter password for new user: ');
+          const fullName = await prompt('Enter full name for user: ');
+          const isowner = (await prompt('Should this user be an owner? (y/n): ')).toLowerCase() === 'y';
+          
+          // Create user in Supabase
+          try {
+            const { data, error } = await supabase.auth.admin.createUser({
+              email,
+              password,
+              email_confirm: true,
+              user_metadata: { 
+                full_name: fullName,
+                isowner: isowner ? 1 : 0 
+              }
+            });
+            
+            if (error) throw error;
+            console.log('✅ Created user in Supabase Auth');
+          } catch (createError) {
+            console.error('❌ Failed to create user in Supabase:', createError.message);
+            return;
+          }
+        } else {
+          return;
+        }
+      } else {
+        console.log('✅ Found user in Supabase Auth');
+      }
+      
+      // Check if user exists in DB
+      console.log('Checking public_users table...');
+      const dbUser = await prisma.users.findFirst({
+        where: { email: { equals: email, mode: 'insensitive' } }
+      });
+      
+      if (dbUser) {
+        console.log('✅ User exists in public_users table with ID:', dbUser.user_id);
+        
+        // Check if user is supposed to be an owner
+        let supabaseUserData;
+        try {
+          const { data, error } = await supabase.auth.admin.getUserByEmail(email);
+          if (!error && data?.user) {
+            supabaseUserData = data.user;
+          }
+        } catch (error) {
+          console.warn('⚠️ Could not fetch user metadata from Supabase');
+        }
+        
+        const isOwnerInSupabase = supabaseUserData?.user_metadata?.isowner === 1 || 
+                                supabaseUserData?.user_metadata?.isowner === '1';
+        const isOwnerInDb = dbUser.isowner === '1' || dbUser.isowner === 1;
+        
+        if (isOwnerInSupabase !== isOwnerInDb) {
+          console.log('⚠️ Owner status mismatch between Supabase and database:');
+          console.log(`   - Supabase: ${isOwnerInSupabase ? 'Owner' : 'Not owner'}`);
+          console.log(`   - Database: ${isOwnerInDb ? 'Owner' : 'Not owner'}`);
+          
+          const updateOwner = await prompt('Do you want to update the database to match Supabase? (y/n): ');
+          if (updateOwner.toLowerCase() === 'y') {
+            try {
+              await prisma.users.update({
+                where: { user_id: dbUser.user_id },
+                data: { isowner: isOwnerInSupabase ? '1' : '0' }
+              });
+              
+              console.log('✅ Updated isowner status in database');
+              
+              // Create/delete owner record if needed
+              if (isOwnerInSupabase) {
+                try {
+                  await prisma.owner.upsert({
+                    where: { owner_id: dbUser.user_id },
+                    update: {},
+                    create: { owner_id: dbUser.user_id, license: 'auto-created' }
+                  });
+                  console.log('✅ Created/updated owner record');
+                } catch (ownerError) {
+                  console.error('❌ Failed to create/update owner record:', ownerError.message);
+                }
+              }
+            } catch (updateError) {
+              console.error('❌ Failed to update owner status:', updateError.message);
+            }
+          }
+        } else {
+          console.log('✅ Owner status matches between Supabase and database');
+        }
+        
+        console.log('\nNo further action needed for this user.');
+        return;
+      }
+      
+      console.log('❌ User not found in public_users table');
+      const createInDb = await prompt('Do you want to create this user in the database? (y/n): ');
+      
+      if (createInDb.toLowerCase() !== 'y') {
+        return;
+      }
+      
+      // Get user metadata
+      let fullName = '';
+      let isowner = false;
+      
+      try {
+        const { data } = await supabase.auth.admin.getUserByEmail(email);
+        if (data?.user) {
+          fullName = data.user.user_metadata?.full_name || '';
+          isowner = data.user.user_metadata?.isowner === 1 || data.user.user_metadata?.isowner === '1';
+        }
+      } catch (error) {
+        // Ignore errors and use default values
+      }
+      
+      fullName = fullName || await prompt('Enter full name for user: ');
+      
+      if (!isowner) {
+        isowner = (await prompt('Should this user be an owner? (y/n): ')).toLowerCase() === 'y';
+      }
+      
+      // Create user in public_users
+      try {
+        const newUser = await prisma.users.create({
+          data: {
+            email: email,
+            full_name: fullName,
+            verified: 'yes',
+            isowner: isowner ? '1' : '0',
+            created_at: new Date(),
+            updated_at: new Date()
+          }
+        });
+        
+        console.log(`✅ Created user in database with ID: ${newUser.user_id}`);
+        
+        // Create owner record if needed
+        if (isowner) {
+          try {
+            await prisma.owner.create({
+              data: {
+                owner_id: newUser.user_id,
+                license: 'auto-created'
+              }
+            });
+            console.log('✅ Created owner record');
+          } catch (ownerError) {
+            console.error('❌ Failed to create owner record:', ownerError.message);
+          }
+        }
+      } catch (createError) {
+        console.error('❌ Failed to create user in database:', createError.message);
+      }
+    } else if (operation === '4') {
+      // Exit
+      console.log('Exiting...');
+    } else {
+      console.log('Invalid option selected');
     }
     
   } catch (error) {
-    console.error('Failed during user registration fix:', error);
+    console.error(`\n❌ An unexpected error occurred: ${error.message}`);
+    console.error(error.stack);
   } finally {
+    // Close connection and readline interface
     await prisma.$disconnect();
     rl.close();
   }
 }
 
-// Run the fix
-fixUserRegistration()
-  .catch(console.error)
-  .finally(() => process.exit(0));
+// Run the script
+fixUserRegistration().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});

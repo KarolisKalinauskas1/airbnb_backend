@@ -52,43 +52,38 @@ const MAX_RETRIES = 5;
 const RETRY_DELAY = 5000;
 
 async function connectWithRetry() {
-    try {
-        await prisma.$connect();
-        console.log('Successfully connected to database');
-        isDbConnected = true;
-        connectionAttempts = 0;
-        
-        // Set up connection monitoring
-        setInterval(async () => {
-            try {
-                await prisma.$queryRaw`SELECT 1`;
-            } catch (error) {
-                console.error('Database connection check failed:', error);
-                isDbConnected = false;
-                connectWithRetry();
-            }
-        }, 30000); // Check every 30 seconds
-    } catch (error) {
-        connectionAttempts++;
-        console.error(`Failed to connect to database (attempt ${connectionAttempts}/${MAX_RETRIES}):`, error);
-        
-        if (connectionAttempts < MAX_RETRIES) {
-            console.log(`Retrying in ${RETRY_DELAY/1000} seconds...`);
-            setTimeout(connectWithRetry, RETRY_DELAY);
-        } else if (process.env.NODE_ENV === 'production') {
-            console.error('Max retries reached but continuing in production mode');
-            // Reset attempts to allow future retry cycles
-            connectionAttempts = 0;
-            setTimeout(connectWithRetry, RETRY_DELAY * 2);
-        } else {
-            console.error('Max retry attempts reached in development mode, exiting');
-            process.exit(1);
-        }
+  try {
+    await prisma.$connect();
+    console.log('Successfully connected to database');
+    isDbConnected = true;
+    connectionAttempts = 0;
+    
+    // Once connected, start the server
+    startServer();
+    
+    // Monitor database connection
+    setInterval(async () => {
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+      } catch (error) {
+        console.error('Database connection check failed:', error);
+        isDbConnected = false;
+        connectWithRetry();
+      }
+    }, 30000); // Check every 30 seconds
+  } catch (error) {
+    connectionAttempts++;
+    console.error(`Failed to connect to database (attempt ${connectionAttempts}/${MAX_RETRIES}):`, error);
+    
+    if (connectionAttempts < MAX_RETRIES) {
+      console.log(`Retrying in ${RETRY_DELAY/1000} seconds...`);
+      setTimeout(connectWithRetry, RETRY_DELAY);
+    } else {
+      console.error('Max retries reached. Server startup failed.');
+      process.exit(1);
     }
+  }
 }
-
-// Start initial connection attempt
-connectWithRetry();
 
 /**
  * Normalize a port into a number, string, or false.
@@ -195,74 +190,46 @@ cron.schedule('0 11 * * *', async () => {
   }
 });
 
-// Start server with connection checks
 function startServer() {
-    server.listen(port);
-    server.on('error', onError);
-    server.on('listening', onListening);
-
-    // Add error event handler for the server
-    server.on('error', (error) => {
-        console.error('Server error:', error);
-        if (error.code === 'EADDRINUSE') {
-            console.log('Address in use, retrying in 5 seconds...');
-            setTimeout(() => {
-                server.close();
-                server.listen(port);
-            }, 5000);
-        }
-    });
+  server.listen(port, process.env.HOST || 'localhost', () => {
+    console.log(`Server running at http://${process.env.HOST || 'localhost'}:${port}`);
+  });
 }
 
-// Start the server only after initial database connection in production
-if (process.env.NODE_ENV === 'production') {
-    const startTimeout = setTimeout(() => {
-        console.log('Starting server without waiting for database (timeout reached)');
-        startServer();
-    }, 30000); // 30s timeout
+// Start the connection process
+connectWithRetry();
 
-    prisma.$connect()
-        .then(() => {
-            clearTimeout(startTimeout);
-            console.log('Database connected, starting server');
-            startServer();
-        })
-        .catch((error) => {
-            console.warn('Starting server despite database connection failure:', error.message);
-            startServer();
-        });
-} else {
-    // In development, start immediately
-    startServer();
-}
+// Error handling for the server
+server.on('error', (error) => {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
 
-// Handle shutdown gracefully
-async function gracefulShutdown(signal) {
-    console.log(`\n${signal} received. Starting graceful shutdown...`);
-    
-    // Create a shutdown timeout
-    const shutdownTimeout = setTimeout(() => {
-        console.error('Could not close connections in time, forcefully shutting down');
-        process.exit(1);
-    }, 10000); // 10s timeout
-    
-    try {
-        console.log('Closing HTTP server...');
-        await new Promise((resolve) => {
-            server.close(resolve);
-        });
-        
-        console.log('Closing database connection...');
-        await prisma.$disconnect();
-        
-        clearTimeout(shutdownTimeout);
-        console.log('Graceful shutdown completed');
-        process.exit(0);
-    } catch (error) {
-        console.error('Error during shutdown:', error);
-        process.exit(1);
-    }
-}
+  const bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
 
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown); 
+  // Handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  await prisma.$disconnect();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});

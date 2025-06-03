@@ -1,28 +1,14 @@
-const rateLimit = require('express-rate-limit');
+const express = require('express');
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+const { jwtConfig } = require('../config');
 const prisma = require('../config/prisma');
-const { jwtConfig, verifyToken } = require('../config');
 
-// Token storage with automatic cleanup
+// Token cache and blacklist
 const tokenCache = new Map();
 const tokenBlacklist = new Map();
 
-// Cleanup expired tokens periodically
-setInterval(() => {
-    const now = Date.now();
-    for (const [token, expiryTime] of tokenBlacklist.entries()) {
-        if (now > expiryTime) {
-            tokenBlacklist.delete(token);
-        }
-    }
-    for (const [token, data] of tokenCache.entries()) {
-        if (now > data.expiryTime) {
-            tokenCache.delete(token);
-        }
-    }
-}, 15 * 60 * 1000); // Clean up every 15 minutes
-
-// Enhanced rate limiting with IP tracking
+// Rate limiting for auth requests
 const authRateLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
@@ -31,7 +17,6 @@ const authRateLimiter = rateLimit({
     message: { error: 'Too many authentication attempts, please try again later' },
     skipSuccessfulRequests: true,
     keyGenerator: (req) => {
-        // Use X-Forwarded-For if behind a proxy, otherwise use IP
         return req.headers['x-forwarded-for'] || req.ip;
     }
 });
@@ -65,21 +50,24 @@ async function refreshUserToken(oldToken) {
             throw new Error('User not found');
         }
         
-        // Generate new token
+        // Generate new token with consistent fields
         const token = jwt.sign(
-            { 
-                sub: user.user_id,
+            {
+                sub: user.user_id.toString(),
+                user_id: user.user_id,
                 email: user.email,
-                isowner: Number(user.isowner)
+                full_name: user.full_name,
+                isowner: Number(user.isowner),
+                verified: user.verified
             },
             jwtConfig.secret,
-            jwtConfig.options
+            { expiresIn: '7d' }
         );
         
         // Cache new token
         tokenCache.set(token, {
             userId: user.user_id,
-            expiryTime: Date.now() + (24 * 60 * 60 * 1000)
+            expiryTime: Date.now() + (7 * 24 * 60 * 60 * 1000)
         });
         
         // Blacklist old token
@@ -97,79 +85,60 @@ async function refreshUserToken(oldToken) {
  */
 const authenticate = async (req, res, next) => {
     try {
+        console.log('Auth middleware - headers:', {
+            auth: req.headers.authorization ? 'present' : 'missing',
+            cookie: req.headers.cookie ? 'present' : 'missing'
+        });
+
+        // Get token from Authorization header
         const authHeader = req.headers.authorization;
-        
         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            return res.status(401).json({ error: 'No authorization token provided' });
+            console.log('Auth middleware - No bearer token found');
+            return res.status(401).json({ error: 'Authentication required' });
         }
 
+        // Extract and verify token
         const token = authHeader.split(' ')[1];
-        
         if (!token) {
-            return res.status(401).json({ error: 'Invalid authorization token format' });
+            console.log('Auth middleware - Empty token');
+            return res.status(401).json({ error: 'Authentication required' });
         }
 
-        // Check blacklist first
-        if (tokenBlacklist.has(token)) {
-            return res.status(401).json({ error: 'Token has been revoked' });
-        }
-
+        // Verify token
         try {
-            // Use enhanced token verification
-            const decoded = await verifyToken(token);
-            
-            // Get user from database
-            const dbUser = await prisma.public_users.findUnique({
-                where: { email: decoded.email }
+            const decoded = jwt.verify(token, jwtConfig.secret);
+            console.log('Auth middleware - Token decoded:', {
+                subject: decoded.sub,
+                email: decoded.email
             });
-            
-            if (!dbUser) {
+
+            // Get fresh user data from database
+            const user = await prisma.users.findUnique({
+                where: { user_id: parseInt(decoded.sub) }
+            });
+
+            if (!user) {
+                console.log('Auth middleware - User not found in database:', decoded.email);
                 return res.status(401).json({ error: 'User not found' });
             }
 
-            // Attach verified user data to request
+            // Attach normalized user object to request
             req.user = {
-                user_id: dbUser.user_id,
-                email: dbUser.email,
-                full_name: dbUser.full_name,
-                isowner: Number(dbUser.isowner) || 0,
-                token_type: 'jwt'
+                user_id: user.user_id,
+                email: user.email,
+                full_name: user.full_name,
+                isowner: Number(user.isowner),
+                verified: user.verified
             };
-            
+
             next();
         } catch (jwtError) {
-            if (jwtError.name === 'TokenExpiredError') {
-                try {
-                    const newToken = await refreshUserToken(token);
-                    if (newToken) {
-                        res.set('X-New-Token', newToken);
-                        // Verify new token and continue
-                        const decoded = await verifyToken(newToken);
-                        const dbUser = await prisma.public_users.findUnique({
-                            where: { email: decoded.email }
-                        });
-                        
-                        if (dbUser) {
-                            req.user = {
-                                user_id: dbUser.user_id,
-                                email: dbUser.email,
-                                full_name: dbUser.full_name,
-                                isowner: Number(dbUser.isowner) || 0,
-                                token_type: 'jwt'
-                            };
-                            return next();
-                        }
-                    }
-                    return res.status(401).json({ error: 'Token expired and refresh failed' });
-                } catch (refreshError) {
-                    return res.status(401).json({ error: 'Token expired and refresh failed' });
-                }
-            }
-            return res.status(401).json({ error: jwtError.message || 'Invalid token' });
+            console.error('Auth middleware - JWT error:', jwtError);
+            return res.status(401).json({ error: 'Invalid or expired token' });
         }
     } catch (error) {
-        console.error('Auth middleware error:', error);
-        return res.status(500).json({ error: 'Internal server error during authentication' });
+        console.error('Auth middleware - Unexpected error:', error);
+        res.status(500).json({ error: 'Authentication failed' });
     }
 };
 

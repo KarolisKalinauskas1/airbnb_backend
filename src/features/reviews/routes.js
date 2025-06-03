@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../modules/auth/middleware/auth.middleware');
-const { prisma } = require('../config');
+const { authenticate } = require('../../../middlewares/auth');
+const { prisma } = require('../../../config/database');
 
 // Apply authentication middleware to all routes
 router.use(authenticate);

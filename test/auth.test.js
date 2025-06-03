@@ -40,7 +40,7 @@ describe('Authentication System', () => {
 
         beforeAll(async () => {
             // Create a test user
-            testUser = await prisma.public_users.create({
+            testUser = await prisma.users.create({
                 data: {
                     email: 'test@example.com',
                     full_name: 'Test User',
@@ -61,7 +61,7 @@ describe('Authentication System', () => {
         afterAll(async () => {
             // Cleanup test user
             if (testUser) {
-                await prisma.public_users.delete({
+                await prisma.users.delete({
                     where: { email: 'test@example.com' }
                 });
             }
@@ -138,7 +138,7 @@ describe('Authentication System', () => {
 
         beforeAll(async () => {
             // Create a test user
-            testUser = await prisma.public_users.create({
+            testUser = await prisma.users.create({
                 data: {
                     email: 'test2@example.com',
                     full_name: 'Test User 2',
@@ -159,7 +159,7 @@ describe('Authentication System', () => {
         afterAll(async () => {
             // Cleanup test user
             if (testUser) {
-                await prisma.public_users.delete({
+                await prisma.users.delete({
                     where: { email: 'test2@example.com' }
                 });
             }

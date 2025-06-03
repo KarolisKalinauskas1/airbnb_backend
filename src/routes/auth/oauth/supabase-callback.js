@@ -23,6 +23,7 @@ router.post('/google/supabase-callback', async (req, res) => {
     const { supabase_id, email, full_name, avatar_url } = req.body;
     
     if (!supabase_id || !email) {
+      console.error('Missing required data in Supabase callback:', { supabase_id, email });
       return res.status(400).json({ 
         error: 'Missing required data', 
         details: 'User ID and email are required' 
@@ -31,9 +32,14 @@ router.post('/google/supabase-callback', async (req, res) => {
 
     console.log(`Processing Supabase OAuth data for: ${email}`);
     
-    // Check if user exists in our database
+    // Check if user exists in our database first by email, then by auth_user_id
     let user = await prisma.public_users.findFirst({
-      where: { email: email }
+      where: {
+        OR: [
+          { email: email },
+          { auth_user_id: supabase_id }
+        ]
+      }
     });
 
     let isNewUser = false;
@@ -47,7 +53,7 @@ router.post('/google/supabase-callback', async (req, res) => {
         data: {
           email,
           full_name: full_name || email.split('@')[0],
-          auth_user_id: supabase_id,
+          auth_user_id: supabase_id,  // Make sure to store this
           profile_image: avatar_url || null,
           isowner: '0',
           verified: 'yes',
@@ -57,13 +63,25 @@ router.post('/google/supabase-callback', async (req, res) => {
       });
 
       // Send welcome email for new users
-      if (isNewUser) {
-        SimpleGmailService.sendWelcomeEmail(user)
-          .catch(err => console.error('Failed to send welcome email:', err));
+      try {
+        await SimpleGmailService.sendWelcomeEmail(user);
+      } catch (emailError) {
+        console.error('Failed to send welcome email:', emailError);
+        // Don't fail the registration if email fails
       }
     } 
-    // If user exists but we have updated information (like profile picture)
-    else if (avatar_url && !user.profile_image) {
+    // Update existing user if needed
+    else if (!user.auth_user_id || user.auth_user_id !== supabase_id) {
+      // Update auth_user_id if missing or different
+      user = await prisma.public_users.update({
+        where: { user_id: user.user_id },
+        data: { 
+          auth_user_id: supabase_id,
+          profile_image: avatar_url || user.profile_image,
+          updated_at: new Date()
+        }
+      });
+    } else if (avatar_url && !user.profile_image) {
       await prisma.public_users.update({
         where: { user_id: user.user_id },
         data: { 

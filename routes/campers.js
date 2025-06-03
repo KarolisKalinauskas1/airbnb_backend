@@ -6,17 +6,35 @@ const { geocodeAddress, calculateDistance } = require('../utils/geocoding');
 const cloudinary = require('../utils/cloudinary');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
-const { authenticate } = require('../middleware/auth');
+const { authenticate, optionalAuthenticate } = require('../middleware/auth');
 const validate = require('../middlewares/validate');
 const { cacheMiddleware, clearCache } = require('../middlewares/cache-middleware');
 const camperSchemas = require('../schemas/camper-schemas');
+
+// Add CORS headers for public endpoints
+router.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  next();
+});
 
 // Add logging middleware for all requests
 router.use((req, res, next) => {
   console.log(`[campers.js] ${req.method} ${req.path} - Auth header: ${!!req.headers.authorization}`);
   
-  // Set proper content-type for all responses
-  res.set('Content-Type', 'application/json');
+  // Set proper content-type and cache headers for all responses
+  res.set({
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS'
+  });
+  
+  // Handle preflight requests for CORS
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
   
   next();
 });
@@ -25,6 +43,100 @@ router.use((req, res, next) => {
 router.use((req, res, next) => {
   console.log(`[campers.js] Processing route: ${req.method} ${req.path}`);
   next();
+});
+
+// Get camping spots with optional authentication
+router.get('/', optionalAuthenticate, async (req, res) => {
+  try {
+    const { minPrice, maxPrice, guests, lat, lng, radius } = req.query;
+    const query = {
+      where: {},
+      include: {
+        images: true,
+        location: {
+          include: { country: true }
+        },
+        camping_spot_amenities: {
+          include: { amenity: true }
+        },
+        bookings: {
+          where: { status_id: { not: 5 } } // Exclude blocked dates
+        }
+      }
+    };
+
+    // Price filters
+    if (minPrice || maxPrice) {
+      query.where.price_per_night = {};
+      if (minPrice) query.where.price_per_night.gte = parseFloat(minPrice);
+      if (maxPrice) query.where.price_per_night.lte = parseFloat(maxPrice);
+    }
+
+    // Guest capacity filter
+    if (guests) {
+      query.where.max_guests = {
+        gte: parseInt(guests)
+      };
+    }
+
+    // If user is authenticated and is owner, exclude their own spots
+    if (req.user?.isowner === 1 || req.user?.isowner === '1') {
+      query.where.owner_id = { not: req.user.user_id };
+    }
+
+    // Get spots from database
+    let spots;
+    try {
+      spots = await prisma.camping_spot.findMany(query);
+    } catch (dbError) {
+      console.error('Database connection error:', dbError);
+      
+      if (dbError instanceof PrismaClientInitializationError || 
+          dbError.message.includes("Can't reach database server") || 
+          dbError.message.includes("Connection refused")) {
+        const { getFallbackCampingSpots } = require('../utils/fallback-data');
+        spots = getFallbackCampingSpots();
+      } else {
+        throw dbError;
+      }
+    }
+
+    // Handle location filtering
+    if (spots && lat && lng) {
+      try {
+        const targetLat = parseFloat(lat);
+        const targetLng = parseFloat(lng);
+        const maxDistance = parseFloat(radius);
+
+        spots = spots.filter(spot => {
+          if (!spot.location?.latitute || !spot.location?.longtitute) return false;
+          try {
+            const spotLat = parseFloat(spot.location.latitute);
+            const spotLng = parseFloat(spot.location.longtitute);
+            
+            if (isNaN(spotLat) || isNaN(spotLng)) return false;
+            
+            const distance = calculateDistance(targetLat, targetLng, spotLat, spotLng);
+            return distance <= maxDistance;
+          } catch (distanceError) {
+            console.error('Distance calculation error for spot:', spot?.camping_spot_id, distanceError);
+            return false;
+          }
+        });
+      } catch (filterError) {
+        console.error('Location filtering error:', filterError);
+      }
+    }
+
+    res.json(spots);
+  } catch (error) {
+    console.error('Search Error:', error);
+    return res.status(500).json({ 
+      error: 'Failed to search camping spots',
+      details: error.message,
+      databaseStatus: 'unavailable'
+    });
+  }
 });
 
 // IMPORTANT: More specific routes must come BEFORE generic routes with parameters
@@ -226,18 +338,27 @@ router.get('/', cacheMiddleware(300), async (req, res) => {
 
         spots = spots.filter(spot => {
           if (!spot.location?.latitute || !spot.location?.longtitute) return false;
-          
-          try {
+            try {
+            // Skip spots without location or coordinates
+            if (!spot || !spot.location || !spot.location.latitute || !spot.location.longtitute) return false;
+            
+            // Parse coordinates safely
+            const spotLat = parseFloat(spot.location.latitute);
+            const spotLng = parseFloat(spot.location.longtitute);
+            
+            // Skip if parsing resulted in NaN
+            if (isNaN(spotLat) || isNaN(spotLng)) return false;
+            
             const distance = calculateDistance(
               targetLat,
               targetLng,
-              parseFloat(spot.location.latitute),
-              parseFloat(spot.location.longtitute)
+              spotLat,
+              spotLng
             );
             return distance <= maxDistance;
           } catch (distanceError) {
-            console.error('Distance calculation error:', distanceError);
-            return true;
+            console.error('Distance calculation error for spot:', spot?.camping_spot_id, distanceError);
+            return false;
           }
         });
       } catch (filterError) {
@@ -258,11 +379,14 @@ router.get('/', cacheMiddleware(300), async (req, res) => {
 
 // Get amenities - PUBLIC ENDPOINT
 router.get('/amenities', cacheMiddleware(300), async (req, res) => {
+  console.log('[campers.js] Processing public GET /amenities request');
   try {
     let amenities;
     
     try {
+      console.log('[campers.js] Fetching amenities from database');
       amenities = await prisma.amenity.findMany();
+      console.log(`[campers.js] Successfully retrieved ${amenities.length} amenities`);
     } catch (dbError) {
       console.error('Database connection error when fetching amenities:', dbError);
       
@@ -287,11 +411,14 @@ router.get('/amenities', cacheMiddleware(300), async (req, res) => {
 
 // Get countries - PUBLIC ENDPOINT
 router.get('/countries', cacheMiddleware(300), async (req, res) => {
+  console.log('[campers.js] Processing public GET /countries request');
   try {
     let countries;
     
     try {
+      console.log('[campers.js] Fetching countries from database');
       countries = await prisma.country.findMany();
+      console.log(`[campers.js] Successfully retrieved ${countries.length} countries`);
     } catch (dbError) {
       console.error('Database connection error when fetching countries:', dbError);
       
@@ -330,7 +457,7 @@ router.get('/debug/auth-status', (req, res) => {
 });
 
 // The generic /:id route should be LAST
-router.get('/:id', cacheMiddleware(300), async (req, res) => {
+router.get('/:id', optionalAuthenticate, cacheMiddleware(300), async (req, res) => {
   const { id } = req.params;
   const { startDate, endDate } = req.query;
 
@@ -388,91 +515,6 @@ router.get('/:id', cacheMiddleware(300), async (req, res) => {
   }
 });
 
-// Create a new camping spot
-router.post('/', authenticate, upload.array('images'), async (req, res) => {
-  try {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-
-    // Parse JSON strings back to objects
-    const location = JSON.parse(req.body.location);
-    const amenities = JSON.parse(req.body.amenities || '[]');
-
-    // Create the camping spot
-    const newSpot = await prisma.camping_spot.create({
-      data: {
-        title: req.body.title,
-        description: req.body.description,
-        price_per_night: parseFloat(req.body.price_per_night),
-        max_guests: parseInt(req.body.max_guests),
-        owner_id: parseInt(req.body.owner_id),
-        location: {
-          create: {
-            address_line1: location.address_line1,
-            address_line2: location.address_line2,
-            city: location.city,
-            country_id: location.country_id,
-            postal_code: location.postal_code
-          }
-        },
-        camping_spot_amenities: {
-          create: amenities.map(amenityId => ({
-            amenity_id: amenityId
-          }))
-        }
-      },
-      include: {
-        images: true,
-        location: {
-          include: { country: true }
-        },
-        camping_spot_amenities: {
-          include: { amenity: true }
-        }
-      }
-    });
-
-    // Handle image uploads if any
-    if (req.files && req.files.length > 0) {
-      const imagePromises = req.files.map(file => {
-        // Convert file buffer to base64
-        const base64Image = file.buffer.toString('base64');
-        
-        return prisma.camping_spot_image.create({
-          data: {
-            camping_spot_id: newSpot.camping_spot_id,
-            image_data: base64Image,
-            image_type: file.mimetype
-          }
-        });
-      });
-
-      await Promise.all(imagePromises);
-    }
-
-    // Fetch the complete spot with all relations
-    const completeSpot = await prisma.camping_spot.findUnique({
-      where: { camping_spot_id: newSpot.camping_spot_id },
-      include: {
-        images: true,
-        location: {
-          include: { country: true }
-        },
-        camping_spot_amenities: {
-          include: { amenity: true }
-        }
-      }
-    });
-
-    res.status(201).json(completeSpot);
-  } catch (error) {
-    console.error('Error creating camping spot:', error);
-    res.status(500).json({ 
-      error: 'Failed to create camping spot', 
-      details: error.message 
-    });
-  }
-});
+// Note: Camping spot creation has been moved to src/features/camping/routes.js
 
 module.exports = router;

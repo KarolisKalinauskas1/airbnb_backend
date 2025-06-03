@@ -7,100 +7,261 @@ const EmailService = require('../shared/services/email.service');
 
 // Get bookings for the currently logged in user
 router.get('/user', authenticate, async (req, res) => {
+  const requestId = Date.now().toString();
+  console.log(`[${requestId}] Starting /bookings/user request`);
+
   try {
-    console.log('Getting bookings for user:', req.user?.user_id);
-    
-    if (!req.user || !req.user.user_id) {
+    // Validate authentication
+    if (!req.user?.email) {
+      console.warn(`[${requestId}] Missing authentication`);
       return res.status(401).json({ error: 'Authentication required' });
     }
-    
-    // Get basic bookings with more explicit selection
-    const bookings = await prisma.bookings.findMany({
-      where: { 
-        user_id: req.user.user_id
-      },
-      include: {
-        camping_spot: {
-          select: {
-            camping_spot_id: true,
-            title: true,
-            description: true,
-            price_per_night: true,
-            location: true,
-            images: true
+
+    const normalizedEmail = req.user.email.toLowerCase().trim();
+    console.log(`[${requestId}] Looking up bookings for email: ${normalizedEmail}`);
+
+    // Find user directly with email first
+    let user;
+    try {
+      user = await prisma.public_users.findUnique({
+        where: { email: normalizedEmail },
+        select: {
+          user_id: true,
+          email: true,
+          verified: true
+        }
+      });
+
+      console.log(`[${requestId}] User lookup result:`, {
+        found: !!user,
+        userId: user?.user_id,
+        email: user?.email
+      });
+    } catch (userError) {
+      console.error(`[${requestId}] Error finding user:`, {
+        error: userError.message,
+        code: userError.code,
+        meta: userError.meta
+      });
+      // Check if it's a connection issue
+      if (userError.code === 'P2024' || userError.code?.startsWith('P1')) {
+        return res.status(503).json({ 
+          error: 'Database connection error',
+          message: 'Unable to connect to database. Please try again.',
+          requestId
+        });
+      }
+      return res.status(500).json({ 
+        error: 'Database error while finding user',
+        requestId 
+      });
+    }
+
+    if (!user) {
+      console.warn(`[${requestId}] No user found for email: ${normalizedEmail}`);
+      return res.status(404).json({ 
+        error: 'User not found',
+        message: 'Unable to find your user account'
+      });
+    }
+
+    // Fetch bookings with retries
+    try {
+      console.log(`[${requestId}] Fetching bookings for user_id: ${user.user_id}`);
+      const bookings = await prisma.public_bookings.findMany({
+        where: { 
+          user_id: user.user_id,
+          status_id: {
+            not: 5 // Exclude blocked bookings
           }
         },
-        status_booking_transaction: true,
-        review: {
-          select: {
-            review_id: true,
-            rating: true,
-            comment: true
+        include: {
+          camping_spot: {
+            include: {
+              images: {
+                take: 1,
+                orderBy: { created_at: 'desc' }
+              },
+              location: {
+                include: { country: true }
+              }
+            }
+          },
+          status_booking_transaction: true,
+          transaction: true,
+          review: true
+        },
+        orderBy: {
+          created_at: 'desc'
+        }
+      });
+
+      // Format bookings for response with careful error handling
+      const formattedBookings = bookings.map(booking => {
+        try {
+          const cost = parseFloat(booking.cost?.toString() || '0');
+          const serviceFee = cost * 0.10; // 10% service fee
+          const totalCost = cost + serviceFee;          const startDate = new Date(booking.start_date);
+          const endDate = new Date(booking.end_date);
+          const now = new Date();
+            // Map booking status from status_id, transaction status, and dates
+          let status;
+          const statusId = booking.status_id;
+          const transactionStatus = booking.status_booking_transaction?.status?.toLowerCase();
+          
+          // Reset time part of dates for comparison
+          const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const bookingStartDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+          const bookingEndDate = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+          
+          if (statusId === 3 || transactionStatus === 'cancelled') {
+            status = 'cancelled';
+          } else if (statusId === 2) {
+            if (bookingEndDate < todayStart) {
+              status = 'completed';  // Past booking
+            } else if (bookingStartDate >= todayStart) {
+              status = 'confirmed';  // Future booking or starts today
+            } else {
+              status = 'confirmed';  // Current/ongoing booking
+            }
+          } else {
+            status = 'pending';
           }
+          
+          // Debug log
+          console.log(`[${requestId}] Booking ${booking.booking_id} status calculation:`, {
+            statusId,
+            transactionStatus,
+            start: bookingStartDate.toISOString(),
+            end: bookingEndDate.toISOString(),
+            today: todayStart.toISOString(),
+            calculatedStatus: status
+          });
+
+          return {
+            id: booking.booking_id,
+            booking_id: booking.booking_id,
+            start_date: startDate,
+            end_date: endDate,
+            number_of_guests: booking.number_of_guests,
+            status: status,
+            cost: cost,
+            service_fee: parseFloat(serviceFee.toFixed(2)),
+            total_cost: parseFloat(totalCost.toFixed(2)),
+            has_review: booking.review?.review_id != null,
+            camping_spot: booking.camping_spot ? {
+              camping_spot_id: booking.camping_spot.camping_spot_id,
+              id: booking.camping_spot.camping_spot_id,
+              title: booking.camping_spot.title,
+              description: booking.camping_spot.description,
+              price_per_night: booking.camping_spot.price_per_night,
+              location: booking.camping_spot.location,
+              images: booking.camping_spot.images || []
+            } : null,
+            created_at: booking.created_at,
+            updated_at: booking.updated_at
+          };
+        } catch (formatError) {
+          console.error('Error formatting booking:', {
+            error: formatError.message,
+            bookingId: booking.booking_id
+          });
+          return {
+            booking_id: booking.booking_id,
+            start_date: booking.start_date,
+            end_date: booking.end_date,
+            status: 'Error',
+            cost: 0,
+            service_fee: 0,
+            total_cost: 0
+          };
         }
-      },
-      orderBy: {
-        created_at: 'desc'
-      }
-    });    // Format the data for the frontend
-    const formattedBookings = bookings.map(booking => {
-      const baseCost = parseFloat(booking.cost || 0);
-      const serviceFee = parseFloat((baseCost * 0.1).toFixed(2));
-      const totalCost = parseFloat((baseCost + serviceFee).toFixed(2));
-      
-      // Extract camping spot data safely
-      const campingSpot = booking.camping_spot || {};
-      const spotTitle = campingSpot.title || 'Unnamed Camping Spot';
-        // Log for debugging
-      console.log(`Booking ${booking.booking_id} has spot title: "${spotTitle}"`);
-      
-      // Extra debugging for specific booking IDs
-      if (booking.booking_id === 21) {
-        console.log('SPECIAL DEBUG - Booking 21:');
-        console.log('  camping_spot_id:', campingSpot.camping_spot_id);
-        console.log('  title:', spotTitle);
-        console.log('  raw camping_spot:', JSON.stringify(campingSpot));
-      }
-      return {
-        id: booking.booking_id,
-        start_date: booking.start_date,
-        end_date: booking.end_date,
-        number_of_guests: booking.number_of_guests,
-        status: booking.status_booking_transaction?.status || 'Pending',
-        status_id: booking.status_id,
-        created_at: booking.created_at,
-        baseCost: baseCost,
-        serviceFee: serviceFee,
-        totalCost: totalCost,
-        has_review: !!booking.review,        spot: {
-          id: campingSpot.camping_spot_id,
-          name: spotTitle, // Use the title as name
-          title: spotTitle, // Explicitly include title field
-          description: campingSpot.description || '',
-          price_per_night: campingSpot.price_per_night || 0,
-          location: campingSpot.location || {},
-          images: campingSpot.images || []
-        }
+      });      // Debug: Log all bookings before categorization
+      console.log(`[${requestId}] All bookings before categorization:`, formattedBookings.map(b => ({
+        id: b.booking_id,
+        status: b.status,
+        start: b.start_date,
+        end: b.end_date
+      })));
+
+      // Categorize bookings by status
+      const categorizedBookings = {
+        upcoming: formattedBookings.filter(booking => 
+          booking.status === 'confirmed'
+        ).sort((a, b) => new Date(a.start_date) - new Date(b.start_date)),
+        previous: formattedBookings.filter(booking => 
+          booking.status === 'completed'
+        ).sort((a, b) => new Date(b.end_date) - new Date(a.end_date)),
+        cancelled: formattedBookings.filter(booking => 
+          booking.status === 'cancelled'
+        ).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       };
-    });
-      console.log(`Found ${formattedBookings.length} bookings for user ${req.user.user_id}`);
-    
-    // Debug what we're sending
-    if (formattedBookings.length > 0) {
-      console.log('First formatted booking spot data:', JSON.stringify({
-        id: formattedBookings[0].id,
-        spot: {
-          id: formattedBookings[0].spot?.id,
-          name: formattedBookings[0].spot?.name,
-          title: formattedBookings[0].spot?.title
-        }
-      }, null, 2));
+
+      // Debug: Log categorized bookings
+      console.log(`[${requestId}] Categorized bookings details:`, {
+        all_bookings_count: formattedBookings.length,
+        upcoming_details: categorizedBookings.upcoming.map(b => ({
+          id: b.booking_id,
+          start: b.start_date,
+          end: b.end_date,
+          status: b.status
+        })),
+        previous_details: categorizedBookings.previous.map(b => ({
+          id: b.booking_id,
+          start: b.start_date,
+          end: b.end_date,
+          status: b.status
+        })),
+        cancelled_details: categorizedBookings.cancelled.map(b => ({
+          id: b.booking_id,
+          start: b.start_date,
+          end: b.end_date,
+          status: b.status
+        }))
+      });
+
+      console.log(`[${requestId}] Successfully categorized bookings:`, {
+        total: formattedBookings.length,
+        upcoming: categorizedBookings.upcoming.length,
+        previous: categorizedBookings.previous.length,
+        cancelled: categorizedBookings.cancelled.length
+      });
+
+      return res.json(categorizedBookings);
+
+    } catch (bookingsError) {
+      console.error(`[${requestId}] Error fetching bookings:`, {
+        userId: user.user_id,
+        error: bookingsError.message,
+        code: bookingsError.code,
+        meta: bookingsError.meta,
+        stack: bookingsError.stack
+      });
+      
+      if (bookingsError.code === 'P2024' || bookingsError.code?.startsWith('P1')) {
+        return res.status(503).json({ 
+          error: 'Database connection error',
+          message: 'Unable to connect to database. Please try again.',
+          requestId
+        });
+      }
+      
+      return res.status(500).json({ 
+        error: 'Error fetching bookings',
+        requestId
+      });
     }
-    
-    res.json(formattedBookings);
   } catch (error) {
-    console.error('Error fetching user bookings:', error);
-    res.status(500).json({ error: error.message });
+    console.error(`[${requestId}] Unhandled error in /bookings/user:`, {
+      error: error.message,
+      stack: error.stack,
+      code: error.code
+    });
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred',
+      requestId
+    });
   }
 });
 
@@ -175,7 +336,7 @@ router.get('/success', async (req, res) => {
     });    // After creating the booking and transaction
     try {
       // Get the full user record for the email
-      const user = await prisma.public_users.findUnique({
+      const user = await prisma.users.findUnique({
         where: { user_id: parseInt(user_id) }
       });
       
@@ -290,33 +451,20 @@ router.get('/', async (req, res) => {
 // Get a single booking
 router.get('/:id', async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
+    const user = await prisma.users.findUnique({
+      where: { email: req.user.email }
     });
 
-    const booking = await prisma.booking.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: {
-        campingSpot: {
-          include: {
-            owner: {
-              select: {
-                id: true,
-                name: true,
-                email: true
-              }
-            }
-          }
-        }
-      }
+    const booking = await prisma.bookings.findUnique({
+      where: { id: parseInt(req.params.id) }
     });
 
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    // Only allow access to the booking owner or the camping spot owner
-    if (booking.userId !== user.id && booking.campingSpot.ownerId !== user.id) {
+    // Check authorization using user_id from our database
+    if (booking.user_id !== user.user_id) {
       return res.status(403).json({ error: 'Not authorized to view this booking' });
     }
 
@@ -330,6 +478,15 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { campingSpotId, startDate, endDate, numberOfGuests } = req.body;
+
+    // Get user by email first
+    const user = await prisma.users.findUnique({
+      where: { email: req.user.email }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
     // Check if the camping spot exists
     const campingSpot = await prisma.campingSpot.findUnique({
@@ -360,10 +517,6 @@ router.post('/', async (req, res) => {
     if (existingBooking) {
       return res.status(400).json({ error: 'These dates are not available' });
     }
-
-    const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
-    });
 
     const booking = await prisma.booking.create({
       data: {
@@ -400,7 +553,7 @@ router.put('/:id', async (req, res) => {
     const { startDate, endDate, numberOfGuests } = req.body;
 
     const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
+      where: { email: req.user.email }
     });
 
     const booking = await prisma.booking.findUnique({
@@ -470,7 +623,7 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
-      where: { auth_user_id: req.user.id }
+      where: { email: req.user.email }
     });
 
     const booking = await prisma.booking.findUnique({
@@ -491,7 +644,7 @@ router.delete('/:id', async (req, res) => {
     // Send cancellation email
     try {
       // Get the full user record for the email
-      const fullUser = await prisma.public_users.findUnique({
+      const fullUser = await prisma.users.findUnique({
         where: { user_id: user.id }
       });
       
@@ -639,8 +792,6 @@ router.post('/create-checkout-session', async (req, res) => {
 
 // Handle the incorrect endpoint that the frontend is using
 router.post('/checkout/create-session', async (req, res) => {
-  // Silent processing (remove console logs to avoid noise)
-  
   // Extract essential data from the request body
   let data = req.body;
   
@@ -662,7 +813,9 @@ router.post('/checkout/create-session', async (req, res) => {
     service_fee: data.service_fee || data.serviceFee || 0,
     total: data.total || data.totalCost || data.totalAmount || 0,
     spot_name: data.spot_name || data.spotName || data.title || 'Camping Spot Booking'
-  };    // If total is missing but we have cost, calculate it
+  };
+
+  // If total is missing but we have cost, calculate it
   if (!bookingData.total && bookingData.cost) {
     const cost = parseFloat(bookingData.cost);
     if (isNaN(cost) || cost <= 0) {
@@ -674,7 +827,9 @@ router.post('/checkout/create-session', async (req, res) => {
     }
     bookingData.total = cost + serviceFee;
     bookingData.service_fee = serviceFee;
-  }    // Validate all required fields for a booking
+  }
+  
+  // Validate all required fields for a booking
   const requiredFields = ['camper_id', 'user_id', 'start_date', 'end_date', 'number_of_guests', 'total'];
   const missingFields = requiredFields.filter(field => bookingData[field] === undefined || bookingData[field] === null || bookingData[field] === '');
   
@@ -697,114 +852,78 @@ router.post('/checkout/create-session', async (req, res) => {
       return res.status(400).json({ error: 'End date must be after start date' });
     }
     
-    // Validate camper_id and user_id
-    const camperId = parseInt(bookingData.camper_id);
-    const userId = parseInt(bookingData.user_id);
-    if (isNaN(camperId) || camperId <= 0) {
+    // Validate and parse numeric fields
+    bookingData.camper_id = parseInt(bookingData.camper_id);
+    bookingData.user_id = parseInt(bookingData.user_id);
+    bookingData.total = parseFloat(bookingData.total);
+    bookingData.number_of_guests = parseInt(bookingData.number_of_guests);
+
+    if (isNaN(bookingData.camper_id) || bookingData.camper_id <= 0) {
       return res.status(400).json({ error: 'Invalid camper_id, must be a positive integer' });
     }
-    if (isNaN(userId) || userId <= 0) {
+    if (isNaN(bookingData.user_id) || bookingData.user_id <= 0) {
       return res.status(400).json({ error: 'Invalid user_id, must be a positive integer' });
     }
-    
-    // Validate numeric fields
-    const total = parseFloat(bookingData.total);
-    const numGuests = parseInt(bookingData.number_of_guests);
-    
-    if (isNaN(total) || total <= 0) {
+    if (isNaN(bookingData.total) || bookingData.total <= 0) {
       return res.status(400).json({ error: 'Total must be a positive number' });
     }
-    if (isNaN(numGuests) || numGuests <= 0 || !Number.isInteger(numGuests)) {
+    if (isNaN(bookingData.number_of_guests) || bookingData.number_of_guests <= 0 || !Number.isInteger(bookingData.number_of_guests)) {
       return res.status(400).json({ error: 'Number of guests must be a positive integer' });
     }
-    
-    // Update the values with the parsed numbers
-    bookingData.camper_id = camperId;
-    bookingData.user_id = userId;
-    bookingData.total = total;
-    bookingData.number_of_guests = numGuests;
   } catch (error) {
     return res.status(400).json({ error: 'Invalid data format', details: error.message });
   }
   
-  try {    // Ensure there's a valid Stripe API key
+  try {
+    // Ensure there's a valid Stripe API key
     if (!process.env.STRIPE_SECRET_KEY) {
       return res.status(500).json({ error: 'Payment service configuration error' });
     }
-    
-    // Log what we're sending to Stripe
-    console.log('Creating Stripe session with:', {
-      sessionConfig: {
-        payment_method_types: ['card'],
-        line_items: [{
-          price_data: {
-            currency: 'eur',
-            product_data: { name: bookingData.spot_name || 'Camping Spot Booking' },
-            unit_amount: Math.round(bookingData.total * 100)
-          },
-          quantity: 1
-        }],
-        mode: 'payment',
-        success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`,
-        metadata: bookingData
-      }
-    });
 
-    // Create a safer Stripe checkout session with minimal required data
-    const sessionConfig = {
+    // Create metadata with string values as required by Stripe
+    const metadata = {
+      camper_id: String(bookingData.camper_id),
+      user_id: String(bookingData.user_id),
+      start_date: String(bookingData.start_date),
+      end_date: String(bookingData.end_date),
+      number_of_guests: String(bookingData.number_of_guests),
+      cost: String(bookingData.cost || '0'),
+      service_fee: String(bookingData.service_fee || '0'),
+      total: String(bookingData.total)
+    };
+
+    // Create the Stripe checkout session
+    const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       line_items: [
         {
           price_data: {
             currency: 'eur',
             product_data: {
-              name: bookingData.spot_name || 'Camping Spot Booking',
+              name: bookingData.spot_name,
+              description: `Booking from ${new Date(bookingData.start_date).toLocaleDateString()} to ${new Date(bookingData.end_date).toLocaleDateString()} for ${bookingData.number_of_guests} guests`
             },
-            unit_amount: Math.round(bookingData.total * 100), // Convert to cents
+            unit_amount: Math.round(bookingData.total * 100) // Convert to cents
           },
-          quantity: 1,
-        },
+          quantity: 1
+        }
       ],
       mode: 'payment',
       success_url: `${process.env.FRONTEND_URL}/booking-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`
-    };
+      cancel_url: `${process.env.FRONTEND_URL}/campers/${bookingData.camper_id}`,
+      metadata
+    });
 
-    // Add metadata with validation
-    const safeMetadata = {};
-    
-    // Only include valid fields in metadata
-    if (bookingData.camper_id) safeMetadata.camper_id = String(bookingData.camper_id);
-    if (bookingData.user_id) safeMetadata.user_id = String(bookingData.user_id);
-    if (bookingData.start_date) safeMetadata.start_date = String(bookingData.start_date);
-    if (bookingData.end_date) safeMetadata.end_date = String(bookingData.end_date);
-    if (bookingData.number_of_guests) safeMetadata.number_of_guests = String(bookingData.number_of_guests);
-    if (bookingData.cost) safeMetadata.cost = String(bookingData.cost);
-    if (bookingData.service_fee) safeMetadata.service_fee = String(bookingData.service_fee);
-    if (bookingData.total) safeMetadata.total = String(bookingData.total);
-    
-    // Add metadata to session config
-    sessionConfig.metadata = safeMetadata;
-      // Create the session
-    const session = await stripe.checkout.sessions.create(sessionConfig);
-    
-    // Log what we're sending back to the client
-    console.log('Responding with Stripe URL:', session.url);
-    
-    // Send a clean, well-structured response
     return res.json({ 
       url: session.url,
       session_id: session.id,
       status: 'success'
     });
   } catch (error) {
-    // Handle error without logging to reduce noise
-    
+    console.error('Error creating checkout session:', error);
     // Add specific error handling for common Stripe issues
     if (error.type === 'StripeInvalidRequestError') {
       if (error.message.includes('valid integer')) {
-        // Most common error is the amount not being a valid integer
         return res.status(400).json({ 
           error: 'Invalid payment amount format',
           details: error.message
@@ -836,7 +955,7 @@ router.put('/:id/status', async (req, res) => {
       return res.status(400).json({ error: 'Invalid booking ID' });
     }
 
-    // Get the booking
+    // Get booking and check permissions
     const booking = await prisma.bookings.findUnique({
       where: { booking_id: bookingId },
       include: {
@@ -848,8 +967,12 @@ router.put('/:id/status', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    // Check if the user is authorized to update the booking
-    if (booking.user_id !== req.user.user_id) {
+    // Check authorization using user_id from our database
+    const user = await prisma.users.findUnique({
+      where: { email: req.user.email }
+    });
+
+    if (!user || booking.user_id !== user.user_id) {
       return res.status(403).json({ error: 'Not authorized to update this booking' });
     }
 

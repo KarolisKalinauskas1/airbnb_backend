@@ -2,7 +2,29 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const { authenticate, authRateLimiter } = require('../middleware/auth');
+const { authenticate, authRateLimiter } = require('../src/middleware/auth');
+const { adminClient } = require('../config/supabase');
+
+// Helper function to find user by id (handles both numeric and UUID formats)
+async function findUserById(userId) {try {    return await prisma.users.findUnique({
+      where: {
+        user_id: isNaN(userId) ? undefined : parseInt(userId)
+      },
+      select: {
+        user_id: true,
+        email: true,
+        full_name: true,
+        isowner: true,
+        verified: true,
+        created_at: true,
+        updated_at: true
+      }
+    });
+  } catch (error) {
+    console.error('Error finding user by ID:', error);
+    throw error;
+  }
+}
 
 /**
  * Apply rate limiting to all authentication-related endpoints
@@ -145,10 +167,9 @@ router.post('/', async (req, res) => {
     contentType: req.headers['content-type'],
     authorization: req.headers.authorization ? 'Present (not shown)' : 'Not present'
   });
+    const { email, full_name, is_seller, license } = req.body;
   
-  const { email, full_name, is_seller, license, auth_user_id } = req.body;
-  
-  console.log('Parsed data:', { email, full_name, is_seller, license, auth_user_id });
+  console.log('Parsed data:', { email, full_name, is_seller, license });
   
   if (!email) {
     console.log('ERROR: Email is required but was not provided');
@@ -156,41 +177,24 @@ router.post('/', async (req, res) => {
   }
   
   try {
-    // First try to find by auth_user_id if provided
-    let existing = null;
-    if (auth_user_id) {
-      console.log('Looking for existing user by auth_user_id:', auth_user_id);
-      existing = await prisma.public_users.findFirst({ 
-        where: { auth_user_id }
-      });
-      
-      if (existing) {
-        console.log('Found existing user by auth_user_id:', existing.user_id);
-      }
-    }
+    // Look up user by email
+    console.log('Looking for existing user by email:', email);
+    const existing = await prisma.public_users.findUnique({ 
+      where: { email }
+    });
     
-    // If not found by auth_user_id, try by email
-    if (!existing) {
-      console.log('Looking for existing user by email:', email);
-      existing = await prisma.public_users.findUnique({ 
-        where: { email }
-      });
-      
-      if (existing) {
-        console.log('Found existing user by email:', existing.user_id);
-      }
+    if (existing) {
+      console.log('Found existing user by email:', existing.user_id);
     }
     
     // If user exists, update their information
     if (existing) {
       console.log('User already exists, updating:', email);
-      
-      // Update user with new information if available
+        // Update user with new information if available
       const updatedUser = await prisma.public_users.update({
         where: { user_id: existing.user_id },
         data: {
           full_name: full_name || existing.full_name,
-          auth_user_id: auth_user_id || existing.auth_user_id, // Ensure auth_user_id is set
           isowner: is_seller === true ? '1' : existing.isowner, // Only update if becoming an owner
           updated_at: new Date()
         }
@@ -232,28 +236,24 @@ router.post('/', async (req, res) => {
     }
 
     // Create new user if they don't exist
-    console.log('User not found, creating new user with email:', email);
-    console.log('Data for new user:', {
+    console.log('User not found, creating new user with email:', email);    console.log('Data for new user:', {
       email,
       full_name,
-      is_seller: is_seller === true ? 'true' : 'false',
-      auth_user_id
+      is_seller: is_seller === true ? 'true' : 'false'
     });
     
     const newUser = await prisma.public_users.create({
       data: {
+        full_name: name,
         email,
-        full_name: full_name || email.split('@')[0],
-        date_of_birth: 'unknown',
-        verified: 'yes', // Mark as verified since we're skipping email verification
-        isowner: is_seller === true ? '1' : '0', // Ensure boolean comparison
-        created_at: new Date(),
-        updated_at: new Date(),
-        auth_user_id: auth_user_id // Store the Supabase user ID
+        verified: "true",
+        isowner: isowner ? 1 : 0,
+        created_at: now,
+        updated_at: now
       }
     });
-    
-    console.log('New user created successfully, ID:', newUser.user_id);
+
+    console.log(`✅ User created in public_users with ID: ${newUser.user_id}`);
 
     // Create owner record if user is a seller
     if (is_seller === true) {
@@ -293,40 +293,116 @@ router.post('/', async (req, res) => {
  * @access  Private
  */
 router.post('/change-password', authenticate, async (req, res) => {
-  try {    
-    if (!req.user) {
-      return res.status(401).json({ error: 'Authentication required' });
+  try {    const { currentPassword, newPassword } = req.body;
+    console.log('Password change request received for user:', req.user.email);
+
+    // Validate input
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        message: 'Both current password and new password are required'
+      });
     }
-    
-    const { current_password, new_password } = req.body;
-    if (!current_password || !new_password) {
-      return res.status(400).json({ error: 'Current and new password required' });
+
+    // Password requirements
+    if (newPassword.length < 8) {
+      return res.status(400).json({ 
+        error: 'Invalid password',
+        message: 'New password must be at least 8 characters long'
+      });
     }
-    
-    // Password strength validation
-    if (new_password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
-    }
-    
-    // Validate password complexity
-    const hasLetter = /[a-zA-Z]/.test(new_password);
-    const hasNumber = /\d/.test(new_password);
-    const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(new_password);
+
+    // Additional password validation (complexity)
+    const hasLetter = /[a-zA-Z]/.test(newPassword);
+    const hasNumber = /\d/.test(newPassword);
+    const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(newPassword);
     
     if (!(hasLetter && (hasNumber || hasSpecial))) {
       return res.status(400).json({ 
-        error: 'Password must contain letters and at least one number or special character'
+        error: 'Invalid password',
+        message: 'Password must contain letters and at least one number or special character'
       });
     }
-    
-    // Password change is handled by Supabase on the frontend
-    // Here we just acknowledge the request
-    
-    res.json({ message: 'Password updated successfully' });
-  } catch (error) {
-    console.error('Password change error:', error);
-    res.status(500).json({ error: 'Failed to change password' });
-  }
+
+    try {      try {
+        // First verify the current password with Supabase
+        const { error: signInError } = await adminClient.auth.signInWithPassword({
+          email: req.user.email,
+          password: currentPassword
+        });
+
+        if (signInError) {
+          console.log('Current password verification failed:', signInError.message);
+          return res.status(401).json({ 
+            error: 'Invalid password',
+            message: 'Current password is incorrect'
+          });
+        }
+
+        // Get the user's Supabase ID from our database
+        const user = await prisma.public_users.findUnique({
+          where: { email: req.user.email },
+          select: {
+            auth_user_id: true
+          }
+        });
+
+        if (!user?.auth_user_id) {
+          console.error('No auth_user_id found for user:', req.user.email);
+          return res.status(500).json({ 
+            error: 'Server error',
+            message: 'User account not properly configured'
+          });
+        }
+
+        // Update password in Supabase
+        const { error: updateError } = await adminClient.auth.admin.updateUserById(
+          user.auth_user_id,
+          { password: newPassword }
+        );        if (updateError) {
+          if (updateError.status === 400) {
+            // Handle invalid password format
+            console.error('Invalid password format:', updateError.message);
+            return res.status(400).json({ 
+              error: 'Invalid password',
+              message: 'Password must meet the minimum requirements: at least 6 characters long and contain letters, numbers, or special characters.'
+            });
+          } else {
+            console.error('Failed to update password in Supabase:', updateError);
+            throw updateError;
+          }
+        }
+
+        console.log('Password successfully updated for user:', req.user.email);
+        res.json({ 
+          success: true, 
+          message: 'Password successfully updated'
+        });
+
+    } catch (error) {
+      console.error('Error changing password:', error);
+      
+      // Handle specific known errors
+      if (error.status === 400) {
+        return res.status(400).json({ 
+          error: 'Invalid password format',
+          message: 'The new password does not meet the minimum requirements. Please ensure it is at least 6 characters long and contains letters, numbers, or special characters.'
+        });
+      }
+      
+      if (error.status === 401) {
+        return res.status(401).json({ 
+          error: 'Authentication failed',
+          message: 'Current password is incorrect.'
+        });
+      }
+      
+      // Generic error for any other cases
+      res.status(500).json({ 
+        error: 'Server error',
+        message: 'Failed to change password. Please try again later.'
+      });
+    }
 });
 
 /**
@@ -382,91 +458,117 @@ router.put('/update-profile', authenticate, async (req, res) => {
 
 /**
  * @route   GET /api/users/me
- * @desc    Get user information (same as full-info)
+ * @desc    Get current user information
  * @access  Private
  */
 router.get('/me', authenticate, async (req, res) => {
+  console.log('GET /me request:', {
+    headers: {
+      authorization: req.headers.authorization ? 'present' : 'missing',
+      cookie: req.headers.cookie ? 'present' : 'missing'
+    },
+    session: req.session ? 'present' : 'missing',
+    user: req.user ? 'present' : 'missing'
+  });
+
+  // Since we have the authenticate middleware, req.user should exist
+  if (!req.user) {
+    console.log('No user object in request. Auth middleware state:', {
+      headers: req.headers,
+      session: req.session
+    });
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
   try {
-    // Set a longer timeout for this request
-    if (req.setTimeout) {
-      req.setTimeout(15000);
-    }
-    
-    // Early response if user is already in request
-    if (req.user) {
-      try {
-        // Clean up the user object before sending
-        const userData = {
-          user_id: req.user.user_id,
-          email: req.user.email,
-          full_name: req.user.full_name,
-          isowner: Number(req.user.isowner) || 0,
-          verified: req.user.verified || 'no',
-          bio: req.user.bio || '',
-          profile_image: req.user.profile_image || null
-        };
-        
-        return res.json(userData);
-      } catch (formatError) {
-        console.error('Error formatting user data:', formatError);
-        return res.status(500).json({
-          error: 'Data formatting error',
-          message: 'Error while preparing user data',
-          details: process.env.NODE_ENV === 'development' ? formatError.message : undefined
-        });
+    const user = await prisma.users.findUnique({
+      where: { user_id: req.user.user_id },
+      select: {
+        user_id: true,
+        email: true,
+        full_name: true,
+        isowner: true,
+        verified: true,
+        created_at: true,
+        updated_at: true
       }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
     }
+
+    res.json(user);
+  } catch (error) {
+    console.error('Error fetching user data:', error);
+    res.status(500).json({ error: 'Failed to fetch user data' });
+  }
+});
+
+/**
+ * @route   GET /api/users/:id
+ * @desc    Get user by ID
+ * @access  Private
+ */
+router.get('/:id', authenticate, async (req, res) => {
+  try {
+    const userId = req.params.id;
     
-    // If we don't have user data already, fetch it from DB
-    try {
-      const userId = req.userId || (req.user && req.user.user_id);
-      
-      if (!userId) {
-        return res.status(401).json({ 
-          error: 'Authentication required',
-          message: 'User ID not found in session or token'
-        });
+    // If the ID is 'true' or 'false', this is likely a bug in the frontend
+    if (userId === 'true' || userId === 'false') {
+      // Instead of failing, let's get the current user's info
+      if (!req.user?.email) {
+        return res.status(401).json({ error: 'Authentication required' });
       }
       
-      const user = await prisma.public_users.findUnique({
-        where: { user_id: parseInt(userId) },
-        select: { 
+      const user = await prisma.users.findUnique({
+        where: { email: req.user.email },
+        select: {
           user_id: true,
           email: true,
           full_name: true,
           isowner: true,
-          bio: true,
           verified: true,
-          profile_image: true,
           created_at: true,
           updated_at: true
         }
       });
-      
+
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      
-      // Format the response
-      const userData = {
+
+      return res.json({
         ...user,
-        isowner: Number(user.isowner) || 0
-      };
-      
-      return res.json(userData);
-    } catch (dbError) {
-      console.error('Database error fetching user info:', dbError);
-      return res.status(500).json({ 
-        error: 'Database error',
-        message: 'Error while retrieving user data from database'
+        isowner: user.isowner === '1' ? '1' : '0'
       });
     }
-  } catch (error) {
-    console.error('Unhandled error in /me endpoint:', error);
-    return res.status(500).json({ 
-      error: 'Server error',
-      message: 'An unexpected error occurred'
+
+    // Normal user lookup by ID
+    const user = await prisma.users.findUnique({
+      where: { user_id: parseInt(userId) },
+      select: {
+        user_id: true,
+        email: true,
+        full_name: true,
+        isowner: true,
+        verified: true,
+        created_at: true,
+        updated_at: true
+      }
     });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json({
+      ...user,
+      isowner: user.isowner === '1' ? '1' : '0'
+    });
+  } catch (error) {
+    console.error('Error fetching user:', error);
+    res.status(500).json({ error: 'Failed to fetch user' });
   }
 });
 

@@ -1,11 +1,44 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../modules/auth/middleware/auth.middleware');
-const prisma = require('../config/prisma');
-const { ValidationError, NotFoundError, ForbiddenError } = require('../shared/middleware/error.middleware');
+const { authenticate } = require('../../../middlewares/auth');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const changePasswordRouter = require('./routes/change-password');
+const meRouter = require('./routes/me');
 
 // Apply authentication middleware to all routes
 router.use(authenticate);
+
+// Mount sub-routes
+router.use('/me', meRouter);
+router.use('/change-password', changePasswordRouter);
+
+/**
+ * Helper function to find user by email
+ */
+async function findUserByEmail(email) {
+  try {
+    console.log('Looking up user with email:', email);
+    return await prisma.users.findUnique({
+      where: { email },
+      select: {
+        user_id: true,
+        email: true,
+        full_name: true,
+        auth_user_id: true,
+        isowner: true,
+        verified: true,
+        created_at: true,
+        updated_at: true,
+        bookings: true,
+        review: true
+      }
+    });
+  } catch (error) {
+    console.error('Error finding user by email:', error);
+    throw error;
+  }
+}
 
 /**
  * @route   GET /api/users/full-info
@@ -15,13 +48,9 @@ router.use(authenticate);
 router.get('/full-info', async (req, res) => {
   try {
     // Get user from auth middleware
-    const { email } = req.user;
-
-    // Fetch user with related data using either user_id or email
-    const user = await prisma.public_users.findUnique({
-      where: {
-        email: email
-      },
+    const { email } = req.user;    // Fetch user with related data using email
+    const user = await prisma.users.findUnique({
+      where: { email },
       include: {
         bookings: {
           include: {
@@ -48,69 +77,27 @@ router.get('/full-info', async (req, res) => {
       full_name: user.full_name,
       email: user.email,
       isowner: Number(user.isowner) || 0,
-      verified: user.verified,
+      verified: user.verified || 'no',
       created_at: user.created_at,
       updated_at: user.updated_at,
       bookings: user.bookings.map(booking => ({
         booking_id: booking.booking_id,
         start_date: booking.start_date,
         end_date: booking.end_date,
-        status: booking.status_booking_transaction.status,
+        status: booking.status_booking_transaction?.status || 'Unknown',
         cost: booking.cost,
-        camping_spot: {
+        camping_spot: booking.camping_spot ? {
           camping_spot_id: booking.camping_spot.camping_spot_id,
           title: booking.camping_spot.title,
           description: booking.camping_spot.description,
           price_per_night: booking.camping_spot.price_per_night,
           location: booking.camping_spot.location,
           images: booking.camping_spot.images
-        }
-      })),
-      reviews: user.review.map(review => ({
-        review_id: review.review_id,
-        rating: review.rating,
-        comment: review.comment,
-        created_at: review.created_at
+        } : null
       }))
     };
 
     res.json(userData);
-  } catch (error) {
-    console.error('Error fetching user info:', error);
-    res.status(500).json({ error: 'Failed to fetch user information' });
-  }
-});
-
-/**
- * @route   GET /api/users/me
- * @desc    Get current user's basic information
- * @access  Private
- */
-router.get('/me', async (req, res) => {
-  try {
-    const userId = req.user.user_id;
-
-    const user = await prisma.public_users.findUnique({
-      where: { user_id: parseInt(userId) },
-      select: {
-        user_id: true,
-        full_name: true,
-        email: true,
-        isowner: true,
-        verified: true,
-        created_at: true,
-        updated_at: true
-      }
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.json({
-      ...user,
-      isowner: Number(user.isowner) || 0
-    });
   } catch (error) {
     console.error('Error fetching user info:', error);
     res.status(500).json({ error: 'Failed to fetch user information' });
@@ -157,101 +144,119 @@ router.put('/me', async (req, res) => {
 // Delete user account
 router.delete('/me', async (req, res, next) => {
   try {
-    // Check if user has any active bookings
-    const activeBookings = await prisma.booking.findFirst({
-      where: {
-        userId: req.user.id,
-        endDate: {
-          gt: new Date()
+    const { email } = req.user;
+
+    // Check for active bookings
+    const user = await prisma.public_users.findUnique({
+      where: { email },
+      include: {
+        bookings: {
+          where: {
+            end_date: {
+              gt: new Date()
+            }
+          }
         }
       }
     });
 
-    if (activeBookings) {
-      throw new ForbiddenError('Cannot delete account with active bookings');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    // Use a transaction to ensure all deletions succeed or none do
-    await prisma.$transaction(async (tx) => {
-      // Delete user's reviews first (foreign key dependency)
-      await tx.review.deleteMany({
-        where: { userId: req.user.id }
+    if (user.bookings.length > 0) {
+      return res.status(400).json({
+        error: 'Cannot delete account',
+        details: 'You have active bookings'
       });
+    }
 
-      // Delete user's bookings
-      await tx.booking.deleteMany({
-        where: { userId: req.user.id }
-      });
-
-      // If user is an owner, delete their camping spots and related data
-      if (req.user.isowner) {
-        // Find all camping spots to get their IDs
-        const spots = await tx.campingSpot.findMany({
-          where: { ownerId: req.user.id },
-          select: { id: true }
-        });
-
-        const spotIds = spots.map(spot => spot.id);
-
-        // Delete all related camping spot data
-        await Promise.all([
-          // Delete spot images
-          tx.campingSpotImage.deleteMany({
-            where: { campingSpotId: { in: spotIds } }
-          }),
-          // Delete spot amenities
-          tx.campingSpotAmenity.deleteMany({
-            where: { campingSpotId: { in: spotIds } }
-          }),
-          // Delete spot locations
-          tx.location.deleteMany({
-            where: { campingSpotId: { in: spotIds } }
-          })
-        ]);
-
-        // Finally delete the camping spots
-        await tx.campingSpot.deleteMany({
-          where: { ownerId: req.user.id }
-        });
-      }
-
-      // Delete user account last (foreign key dependency)
-      await tx.user.delete({
-        where: { id: req.user.id }
-      });
-    });
-
-    res.json({ 
-      message: 'Account deleted successfully',
-      success: true
-    });
-  } catch (error) {
-    console.error('Error deleting user account:', error);
+    // Delete user from database and Supabase
+    const { data: { user: supabaseUser } } = await adminClient.auth.getUser(token);
     
-    if (error instanceof ForbiddenError) {
-      return res.status(403).json({
-        error: 'Forbidden',
-        message: error.message
+    if (supabaseUser) {
+      try {
+        await adminClient.auth.admin.deleteUser(supabaseUser.id);
+        console.log('Deleted user from Supabase');
+      } catch (supabaseError) {
+        console.error('Failed to delete user from Supabase:', supabaseError);
+      }
+    }
+
+    await prisma.user.delete({
+      where: { user_id: user.user_id }
+    });
+
+    res.json({ message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+/**
+ * @route   GET /api/users/:id
+ * @desc    Get user by ID
+ * @access  Private
+ */
+router.get('/:id', async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const userId = req.params.id;
+    console.log('Looking up user with ID:', userId);
+
+    let user;
+    // First try to find by email since that's what Supabase might send
+    try {
+      user = await prisma.users.findUnique({
+        where: { email: userId },
+        select: {
+          user_id: true,
+          email: true,
+          full_name: true,
+          isowner: true,
+          verified: true,
+          created_at: true,
+          updated_at: true,
+          bookings: true,
+          review: true
+        }
+      });
+    } catch (err) {
+      // If not found by email, try by user_id
+      user = await prisma.users.findUnique({
+        where: { user_id: parseInt(userId) },
+        select: {
+          user_id: true,
+          email: true,
+          full_name: true,
+          isowner: true,
+          verified: true,
+          created_at: true,
+          updated_at: true,
+          bookings: true,
+          review: true
+        }
       });
     }
 
-    // Handle transaction timeout
-    if (error.code === 'P2028') {
-      return res.status(408).json({
-        error: 'Transaction timeout',
-        message: 'Account deletion took too long, please try again'
-      });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
     }
 
-    // Handle transaction failures
-    if (error.code === 'P2034') {
-      return res.status(500).json({
-        error: 'Transaction failed',
-        message: 'Account deletion failed, please try again'
-      });
-    }
+    // Format the response to match expected schema
+    const userData = {
+      ...user,
+      isowner: Number(user.isowner) || 0 // Convert string '1'/'0' to number
+    };
 
-    next(error);
+    res.json(userData);
+  } catch (error) {
+    console.error('Error fetching user info:', error);
+    res.status(500).json({ error: 'Failed to fetch user information' });
   }
 });
 

@@ -94,15 +94,9 @@ const authenticate = async (req, res, next) => {
     try {
       // Verify JWT token
       const decoded = jwt.verify(token, jwtConfig.secret);
-      
-      // Find user in database
-      const user = await prisma.public_users.findFirst({
-        where: {
-          OR: [
-            { user_id: parseInt(decoded.sub) || parseInt(decoded.id) || 0 },
-            { email: decoded.email }
-          ]
-        },
+        // Find user in database by email
+      const user = await prisma.public_users.findUnique({
+        where: { email: decoded.email },
         select: {
           user_id: true,
           email: true,

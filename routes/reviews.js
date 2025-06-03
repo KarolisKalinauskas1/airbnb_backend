@@ -4,70 +4,16 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const { authenticate } = require('../src/middleware/auth');
 
-// Get all reviews for a camping spot (public endpoint - no auth required)
+// IMPORTANT: Place all public endpoints BEFORE applying authentication middleware
+
+// Get reviews for a camping spot - DEPRECATED - provides redirect to new path
 router.get('/spot/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log(`[REVIEWS API] Searching for reviews with camping spot ID: ${id}`);
-    
-    // Use a direct join approach with Prisma
-    const reviews = await prisma.review.findMany({
-      where: {
-        bookings: {
-          camper_id: parseInt(id)
-        }
-      },
-      include: {
-        bookings: {
-          include: {
-            users: {
-              select: {
-                full_name: true,
-                user_id: true
-              }
-            }
-          }
-        }
-      },
-      orderBy: {
-        created_at: 'desc'
-      }
-    });
-    
-    console.log(`Direct join query found ${reviews.length} reviews for camping spot ${id}`);
-    
-    // Format reviews for response with better error handling
-    const formattedReviews = reviews.map(review => {
-      try {
-        return {
-          review_id: review.review_id,
-          booking_id: review.booking_id,
-          rating: review.rating,
-          comment: review.comment,
-          created_at: review.created_at,
-          user: review.bookings?.users || { full_name: 'Anonymous' }
-        };
-      } catch (err) {
-        console.error('Error formatting review:', err);
-        return {
-          review_id: review.review_id || 0,
-          rating: review.rating || 0,
-          comment: review.comment || 'No comment provided',
-          created_at: review.created_at || new Date(),
-          user: { full_name: 'Anonymous' }
-        };
-      }
-    });
-    
-    console.log('Formatted reviews:', formattedReviews);
-    res.json(formattedReviews);
-  } catch (error) {
-    console.error('Get Reviews Error:', error);
-    res.status(500).json({ error: 'Failed to fetch reviews' });
-  }
+  res.status(301).json({
+    error: 'Endpoint moved',
+    message: 'This endpoint is deprecated. Please use /api/camping-spots/:id/reviews instead.'
+  });
 });
 
-// Get review statistics for a camping spot
 // Get review statistics for a camping spot (public endpoint - no auth required)
 router.get('/stats/:id', async (req, res) => {
   try {

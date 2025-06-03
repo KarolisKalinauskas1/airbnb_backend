@@ -1,6 +1,10 @@
 const express = require('express');
 const path = require('path');
 const router = express.Router();
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+// Public endpoints moved to app.js for cleaner routing
 
 /**
  * @route   GET /api
@@ -14,6 +18,8 @@ router.get('/api', (req, res) => {
     endpoints: [
       '/api/auth',
       '/api/camping-spots',
+      '/api/camping-spots/amenities',
+      '/api/camping-spots/countries',
       '/api/bookings',
       '/api/users',
       '/api/dashboard',

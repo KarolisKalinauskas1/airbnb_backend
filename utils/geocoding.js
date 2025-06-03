@@ -286,6 +286,55 @@ function generateFallbackCoordinates(address) {
   };
 }
 
+// Search for locations by query string
+async function searchLocations(query) {
+    try {
+        // Check cache first
+        const cacheKey = `search:${query.toLowerCase()}`;
+        if (geocodingCache[cacheKey]) {
+            console.log('Returning cached search results for:', query);
+            return geocodingCache[cacheKey];
+        }
+
+        // Set up geocoding options
+        const options = {
+            provider: 'nominatim',
+            httpAdapter: 'https',
+            apiKey: process.env.GEOCODER_API_KEY, // Optional, some providers need this
+            formatter: null
+        };
+
+        // Use node-geocoder
+        const NodeGeocoder = require('node-geocoder');
+        const geocoder = NodeGeocoder(options);
+
+        // Search for locations
+        const results = await geocoder.geocode(query);
+
+        // Format the results
+        const formattedResults = results.map(result => ({
+            latitude: result.latitude,
+            longitude: result.longitude,
+            formattedAddress: result.formattedAddress,
+            country: result.country,
+            city: result.city,
+            state: result.state,
+            zipcode: result.zipcode,
+            streetName: result.streetName,
+            streetNumber: result.streetNumber,
+            countryCode: result.countryCode
+        }));
+
+        // Cache the results
+        geocodingCache[cacheKey] = formattedResults;
+
+        return formattedResults;
+    } catch (error) {
+        console.error('Location search error:', error);
+        return [];
+    }
+}
+
 // Register process exit handler
 process.on('exit', () => {
   try {
@@ -299,5 +348,6 @@ process.on('exit', () => {
 module.exports = { 
   geocodeAddress,
   calculateDistance,
-  findLocationsWithinRadius
+  findLocationsWithinRadius,
+  searchLocations
 };

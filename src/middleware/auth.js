@@ -1,8 +1,7 @@
 const rateLimit = require('express-rate-limit');
-const prisma = require('../config/prisma');
-const { createClient } = require('@supabase/supabase-js');
+const { PrismaClient } = require('@prisma/client');
 const jwt = require('jsonwebtoken');
-const { RedisStore } = require('../config/redis');
+const prisma = new PrismaClient();
 
 // Ensure JWT secret is properly set
 if (!process.env.JWT_SECRET) {
@@ -10,9 +9,19 @@ if (!process.env.JWT_SECRET) {
   process.exit(1);
 }
 
+const { createClient } = require('@supabase/supabase-js');
+
+// Create Supabase client with enhanced configuration
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_ANON_KEY,
+  {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: false,
+      detectSessionInUrl: false
+    }
+  }
 );
 
 // Enhanced rate limiting configuration
@@ -48,209 +57,171 @@ const passwordResetLimiter = createRateLimiter(
   'Too many password reset attempts, please try again later'
 );
 
-// Enhanced authentication middleware
+/**
+ * Get or create a user in our database from Supabase user data
+ */
+async function getOrCreateUser(supabaseUser) {
+  let user = await prisma.users.findUnique({
+    where: { email: supabaseUser.email },
+    select: {
+      user_id: true,
+      email: true,
+      full_name: true,
+      isowner: true,
+      verified: true
+    }
+  });
+
+  if (!user) {
+    console.log('Creating new user from Supabase data:', supabaseUser.email);
+    user = await prisma.users.create({
+      data: {
+        email: supabaseUser.email,
+        full_name: supabaseUser.user_metadata?.full_name || supabaseUser.email.split('@')[0],
+        isowner: supabaseUser.user_metadata?.isowner || '0',
+        verified: 'yes',
+        created_at: new Date(),
+        updated_at: new Date()
+      },
+      select: {
+        user_id: true,
+        email: true,
+        full_name: true,
+        isowner: true,
+        verified: true
+      }
+    });
+  }
+
+  return user;
+}
+
+// Define protected paths that should never be public
+const PROTECTED_PATHS = [
+  '/api/users',
+  '/api/bookings',
+  '/api/dashboard',
+  '/api/reviews/create',
+  '/api/camping-spots/create',
+  '/api/camping-spots'  // POST requests to /api/camping-spots are protected
+];
+
+// List of public endpoints - always accessible without authentication
+const PUBLIC_ENDPOINTS = [
+  '/api/amenities',
+  '/api/countries',
+  '/api/camping-spots/amenities',
+  '/api/camping-spots/countries',
+  '/amenities',
+  '/countries',
+  '/camping-spots/amenities',
+  '/camping-spots/countries',
+  '/auth/login',
+  '/auth/register',
+  '/auth/signup',
+  '/auth/signin',
+  '/health',
+  '/status',
+  '/api/health',
+  '/api/status'
+];
+
+// Check if a route should be public
+const isPublicRoute = (path, method) => {
+  // Convert path to lowercase and remove trailing slash for consistent comparison
+  const normalizedPath = path.toLowerCase().replace(/\/$/, '');
+  
+  // First check if it's a protected path
+  const isProtected = PROTECTED_PATHS.some(protectedPath => {
+    const isExactMatch = normalizedPath === protectedPath.toLowerCase();
+    const isSubPath = normalizedPath.startsWith(protectedPath.toLowerCase() + '/');
+    
+    // If the path is /api/camping-spots, only protect non-GET methods
+    if (protectedPath === '/api/camping-spots') {
+      return (isExactMatch || isSubPath) && method !== 'GET';
+    }
+    return isExactMatch || isSubPath;
+  });
+
+  if (isProtected) {
+    return false;
+  }
+  
+  // For GET requests to /api/camping-spots or its subpaths, consider them public
+  if (method === 'GET' && 
+      (normalizedPath === '/api/camping-spots' || 
+       normalizedPath.startsWith('/api/camping-spots/'))) {
+    return true;
+  }
+  
+  // Check against public endpoints list
+  const publicEndpoints = PUBLIC_ENDPOINTS;
+
+  // Check exact matches
+  if (publicEndpoints.includes(normalizedPath)) {
+    return true;
+  }
+
+  // Check patterns for public endpoints
+  const isPublicPattern = /^\/?(api\/)?(camping-spots|amenities|countries)(\/\d+)?$/i.test(normalizedPath) ||
+                         /^\/?(api\/)?auth\/(login|register|reset-password)$/i.test(normalizedPath) ||
+                         /^\/?(api\/)?(health|status)$/i.test(normalizedPath);
+
+  return isPublicPattern;
+};
+
+// User authentication middleware
 const authenticate = async (req, res, next) => {
   try {
-    // Log the request path and method
-    console.log('[Auth Middleware] Processing request:', {
-      timestamp: new Date().toISOString(),
-      path: req.path,
-      method: req.method,
-      headers: {
-        authorization: req.headers.authorization ? 'present' : 'missing',
-        cookie: req.headers.cookie ? 'present' : 'missing'
-      }
-    });
-
-    // Get token from different possible sources with better logging
+    // Get token from request
     const authHeader = req.headers.authorization;
-    const cookieToken = req.cookies?.token;
-    const bodyToken = req.body?.token;
+    if (!authHeader) {
+      return res.status(401).json({ error: 'No authorization header' });
+    }
 
-    const token = authHeader?.replace('Bearer ', '') || cookieToken || bodyToken;
-
-    // Log token source for debugging
-    console.log('Auth token source:', {
-      hasAuthHeader: !!authHeader,
-      hasCookieToken: !!cookieToken,
-      hasBodyToken: !!bodyToken,
-      timestamp: new Date().toISOString()
-    });
-
+    const token = authHeader.split(' ')[1];
     if (!token) {
-      console.warn('No auth token provided in request');
-      return res.status(401).json({
-        error: 'Authentication Required',
-        message: 'No authentication token provided'
-      });
+      return res.status(401).json({ error: 'No token provided' });
     }
 
-    // Verify token with detailed error handling
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (jwtError) {
-      console.error('JWT Verification Error:', {
-        error: jwtError.message,
-        name: jwtError.name,
-        token: token.substring(0, 10) + '...'
-      });
-      
-      return res.status(401).json({
-        error: 'Invalid Token',
-        message: `Authentication token is invalid: ${jwtError.message}`
-      });
-    }
-
-    if (!decoded || !decoded.sub) {
-      console.error('Decoded token missing sub field:', decoded);
-      return res.status(401).json({
-        error: 'Invalid Token',
-        message: 'Authentication token is missing required fields'
-      });
-    }
-
-    // Check token in blacklist if using Redis
-    if (RedisStore) {
-      const isBlacklisted = await RedisStore.get(`blacklist:${token}`);
-      if (isBlacklisted) {
-        return res.status(401).json({
-          error: 'Token Revoked',
-          message: 'This token has been revoked'
+    // Verify token
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (error) {
+      if (error.status === 401) {
+        return res.status(401).json({ 
+          error: 'Token expired or invalid',
+          message: 'Please log in again'
         });
       }
-    }    // Get user from database
-    let user;
-    try {
-      // First try to fetch user by auth_user_id (UUID from Supabase)
-      user = await prisma.public_users.findFirst({
-        where: { auth_user_id: decoded.sub },
-        select: {
-          user_id: true,
-          email: true,
-          full_name: true,
-          isowner: true,
-          verified: true
-        }
-      });
-      
-      // If user not found by auth_user_id, try by email as fallback
-      if (!user && decoded.email) {
-        user = await prisma.public_users.findUnique({
-          where: { email: decoded.email },
-          select: {
-            user_id: true,
-            email: true,
-            full_name: true,
-            isowner: true,
-            verified: true
-          }
-        });
-        
-        // If we found user by email but auth_user_id is not set, update it
-        if (user) {
-          try {
-            await prisma.public_users.update({
-              where: { user_id: user.user_id },
-              data: { auth_user_id: decoded.sub }
-            });
-            console.log(`Updated auth_user_id for user: ${user.email}`);
-          } catch (updateError) {
-            console.error('Failed to update auth_user_id:', updateError);
-          }
-        }
-      }
-    } catch (dbError) {
-      console.error('Database error fetching user:', {
-        authUserId: decoded.sub, 
-        error: dbError.message
-      });
-      
-      return res.status(500).json({
-        error: 'Database Error',
-        message: 'Failed to retrieve user data from database'
-      });
-    }    if (!user) {
-      // For security and robustness, we might still let certain endpoints proceed
-      // with limited access by setting a basic user object from token data
-      const isPublicEndpoint = req.path.startsWith('/api/public/') || 
-                              req.path === '/api/health' ||
-                              req.path === '/health';
-                              
-      if (isPublicEndpoint) {
-        req.user = {
-          user_id: null,
-          auth_user_id: decoded.sub,
-          email: decoded.email || 'unknown',
-          authenticated: true,
-          isPublicAccess: true
-        };
-        console.log('Public endpoint access granted with limited user data');
-        return next();
-      }
-      
-      console.warn('User not found for auth ID:', decoded.sub);
-      return res.status(401).json({
-        error: 'Invalid User',
-        message: 'User not found in database'
-      });
+      throw error;
     }
 
-    // Check if account is verified/active
-    if (user.verified === 'false' || user.verified === '0') {
-      return res.status(403).json({
-        error: 'Account Not Verified',
-        message: 'Your account is not verified'
-      });    }    // Attach user to request
+    // Get or create user in our database
+    const dbUser = await getOrCreateUser(user);
+    if (!dbUser) {
+      return res.status(401).json({ error: 'User not found in database' });
+    }
+
+    // Attach user to request
     req.user = {
-      user_id: user.user_id,
-      email: user.email,
-      full_name: user.full_name,
-      isowner: user.isowner === '1' ? '1' : '0',
-      verified: user.verified,
-      auth_user_id: decoded.sub  // This is the Supabase UUID
-    };    // Token refresh logic
-    const tokenExp = decoded.exp * 1000;
-    const now = Date.now();
-    const refreshThreshold = 24 * 60 * 60 * 1000; // 24 hours
-
-    if (tokenExp - now < refreshThreshold) {
-      // Create a new token with the auth_user_id (Supabase UUID) in the sub claim
-      const newToken = jwt.sign(
-        { 
-          sub: decoded.sub, // Keep the original Supabase UUID
-          email: user.email,
-          name: user.full_name 
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: '7d' }
-      );
-
-      res.set('X-New-Token', newToken);
-    }
+      ...dbUser
+    };
 
     next();
   } catch (error) {
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        error: 'Invalid Token',
-        message: 'Authentication token is malformed'
-      });
-    }
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        error: 'Token Expired',
-        message: 'Authentication token has expired'
-      });
-    }
-
-    next(error);
+    console.error('Auth middleware error:', error);
+    res.status(500).json({ error: 'Authentication failed' });
   }
 };
 
 // Optional authentication middleware
 const optionalAuthenticate = async (req, res, next) => {
   try {
+    const path = req.path.replace(/^\/api\//, '');
+    if (isPublicRoute(path, req.method) || req.method === 'OPTIONS') {
+      return next();
+    }
+
     await authenticate(req, res, (err) => {
       if (err && err.status !== 401) {
         next(err);
@@ -268,5 +239,6 @@ module.exports = {
   authRateLimiter,
   optionalAuthenticate,
   loginRateLimiter,
-  passwordResetLimiter
+  passwordResetLimiter,
+  isPublicRoute
 };

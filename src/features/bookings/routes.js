@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../modules/auth/middleware/auth.middleware');
-const { prisma } = require('../config');
+const { authenticate } = require('../../../middlewares/auth');
+const prisma = require('../../../config/database').prisma;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 // Validation middleware for booking dates and guests
@@ -190,9 +190,7 @@ router.get('/success', async (req, res) => {
         bookings: { connect: { booking_id: booking.booking_id } },
         status_booking_transaction: { connect: { status_id: 2 } }
       }
-    });
-
-    res.json({
+    });    res.json({
       success: true,
       booking: {
         id: booking.booking_id,
@@ -202,12 +200,12 @@ router.get('/success', async (req, res) => {
         cost: booking.cost,
         total: transaction.amount,
         status: 'Confirmed',
-        spot: {
+        spot: booking.camping_spot ? {
           id: booking.camping_spot.camping_spot_id,
           title: booking.camping_spot.title,
           image: booking.camping_spot.images?.[0]?.image_url,
           location: booking.camping_spot.location
-        }
+        } : null
       }
     });
   } catch (error) {

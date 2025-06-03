@@ -1,239 +1,103 @@
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcryptjs');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 const jwt = require('jsonwebtoken');
-// Fix the import to use the correct prisma client
-const prisma = require('../config/prisma');
-const { ValidationError } = require('../shared/middleware/error.middleware');
-const { verifyToken, jwtConfig } = require('../config');
-// Fixed import for Supabase - import from correct path with correct exports
-const { adminClient: supabaseAdmin } = require('../../config/supabase');
-// Import the user schemas
-const { registerUserSchema, loginUserSchema } = require('../../schemas/user-schemas');
-// Import adminClient from the correct location for user creation
-const { adminClient } = require('../../config/supabase');
+const rateLimit = require('express-rate-limit');
+const { adminClient } = require('../../../config/supabase');
+const { ValidationError } = require('../../../middlewares/error-handler');
+const { registerUserSchema, loginUserSchema } = require('../../../schemas/user-schemas');
 
 /**
- * Helper function to create owner record if needed
+ * Register new user
  */
-async function createOwnerIfNeeded(userId, license = 'none') {
+router.post('/register', async (req, res) => {
+  console.log('==== POST /api/auth/register ENDPOINT CALLED ====');
+  console.log('Registration endpoint called with data:', req.body);
+  
   try {
-    // Check if owner record already exists
-    const existingOwner = await prisma.owner.findUnique({
-      where: { owner_id: userId }
-    });
-    
-    // Only create if it doesn't exist
-    if (!existingOwner) {
-      await prisma.owner.create({
-        data: {
-          owner_id: userId,
-          license: license || 'none'
-        }
-      });
-      console.log(`Created owner record for user: ${userId}, license: ${license || 'none'}`);
-    } else {
-      console.log(`Owner record already exists for user: ${userId}`);
-    }
-    
-    return true;
-  } catch (error) {
-    console.error(`Failed to create/verify owner record for user ${userId}:`, error);
-    return false;
-  }
-}
+    const { email, password, full_name, is_seller = false } = req.body;
 
-/**
- * Check if Supabase is configured
- */
-const isConfigured = !!(process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY);
-
-/**
- * @route   POST /api/auth/register
- * @desc    Register user and create session (unified registration endpoint)
- * @access  Public
- */
-router.post('/register', async (req, res, next) => {
-  try {
-    console.log('\n\n==== POST /api/auth/register ENDPOINT CALLED ====');
-    
-    // Map the frontend fields to backend expected fields
-    // Check if fullName was sent as name (frontend) instead of full_name (backend expected)
-    if (req.body.name && !req.body.full_name) {
-      req.body.full_name = req.body.name;
-    }
-    
-    // Handle is_seller/isowner field mapping - normalize to is_seller
-    if (req.body.isowner !== undefined && req.body.is_seller === undefined) {
-      req.body.is_seller = req.body.isowner;
-    }
-    
-    // Log the received data after field mapping
-    console.log('Registration endpoint called with data:', { 
-      email: req.body.email,
-      has_password: !!req.body.password,
-      full_name: req.body.full_name,
-      is_seller: req.body.is_seller
-    });
-    
-    // Apply schema validation after field mapping
-    try {
-      registerUserSchema.parse(req.body);
-    } catch (validationError) {
-      console.error('Validation error:', validationError.errors);
-      return res.status(400).json({ 
-        error: 'Invalid registration data', 
-        details: validationError.errors.map(e => e.message) 
+    if (!email || !password || !full_name) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: 'Email, password, and full name are required'
       });
     }
-    
-    if (!isConfigured) {
-      console.log('ERROR: Supabase is not configured');
-      const error = new Error('Authentication service not configured');
-      error.status = 503;
-      throw error;
-    }
 
-    const { email, password, full_name, is_seller, license } = req.body;
-    
-    // Check if user already exists in the database
-    console.log('Checking if user already exists in public_users table...');
-    const existingUser = await prisma.public_users.findUnique({
+    // Check if user already exists in our database
+    console.log('Checking if user exists in users table...');
+    const existingUser = await prisma.users.findUnique({
       where: { email }
     });
-    
+
     if (existingUser) {
-      console.log('User already exists in public_users table:', existingUser.user_id);
-      return res.status(400).json({ error: 'User with this email already exists' });
+      return res.status(400).json({
+        error: 'User already exists',
+        details: 'A user with this email is already registered'
+      });
     }
-    
-    console.log('Creating user in Supabase...');
-    // Create user in Supabase
-    const { data, error } = await adminClient.auth.signUp({
+
+    // Create user in Supabase first
+    const { data: signUpData, error: signUpError } = await adminClient.auth.signUp({
       email,
       password,
       options: {
-        data: { 
+        data: {
           full_name,
-          isowner: is_seller ? 1 : 0
+          isowner: is_seller
         }
       }
     });
-    
-    if (error) {
-      console.error('Supabase signup error:', error);
-      throw error;
+
+    if (signUpError) {
+      console.error('Supabase signup error:', signUpError);
+      return res.status(500).json({
+        error: 'Authentication error',
+        details: signUpError.message
+      });
     }
-    
-    if (!data?.user) {
-      console.error('No user data returned from Supabase');
-      const error = new Error('Failed to create user in authentication service');
-      error.status = 500;
-      throw error;
-    }
-    
-    console.log('Supabase user created successfully, ID:', data.user.id);
-    
-    // Create user in our database
-    let user;
-    try {
-      console.log('Creating user in public_users table...');
-      console.log('Data for new user:', {
+
+    // If Supabase signup successful, create user in our database
+    const user = await prisma.users.create({
+      data: {
         email,
         full_name,
-        auth_user_id: data.user.id,
-        isowner: is_seller ? '1' : '0'
-      });
-      
-      user = await prisma.public_users.create({
-        data: {
-          email,
-          full_name: full_name || email.split('@')[0],
-          auth_user_id: data.user.id,
-          verified: 'no',
-          isowner: is_seller ? '1' : '0',
-          created_at: new Date(),
-          updated_at: new Date()
-        }
-      });
-      
-      console.log('User created in public_users table, ID:', user.user_id);
-      
-      // Create owner record if needed
-      if (is_seller) {
-        console.log('Creating owner record...');
-        await createOwnerIfNeeded(user.user_id, license);
+        isowner: is_seller ? '1' : '0',
+        verified: 'no', // Default to not verified
+        created_at: new Date(),
+        updated_at: new Date()
       }
-      
-      // Check if session exists before attempting to use it
-      if (req.session) {
-        // Create session
-        console.log('Setting up user session...');
-        req.session.userId = user.user_id;
-        req.session.email = user.email;
-        req.session.isowner = user.isowner;
-        req.session.auth_user_id = user.auth_user_id;
-        console.log('Session created successfully');
-      } else {
-        console.log('Warning: Session object is not available. Session data not stored.');
-        // Continue without creating a session - the user will still be registered
-      }
-      
-      console.log('Registration successful, user ID:', user.user_id);
-      console.log('Registration successful, returning response');
-      res.status(201).json({
-        message: 'User registered successfully',
-        user: {
-          user_id: user.user_id,
-          email: user.email,
-          full_name: user.full_name,
-          isowner: Number(user.isowner) || 0
-        },
-        session: req.session ? {
-          userId: user.user_id,
-          email: user.email,
-          authenticated: true
-        } : undefined
-      });
-    } catch (dbError) {
-      // If DB creation fails, delete the Supabase user
-      console.error('Database error during registration:', dbError);
-      console.error('Error details:', dbError.stack);
-      console.error('Prisma error code:', dbError.code);
-      console.error('Prisma error meta:', dbError.meta);
-      
-      try {
-        console.log('Cleaning up Supabase user after DB error...');
-        await adminClient.auth.admin.deleteUser(data.user.id);
-        console.log('Supabase user deleted successfully');
-      } catch (deleteError) {
-        console.error('Failed to clean up Supabase user after DB error:', deleteError);
-      }
-      
-      // Check if this is a unique constraint violation (user already exists)
-      if (dbError.code === 'P2002') {
-        return res.status(400).json({ 
-          error: 'User with this email already exists',
-          details: 'A user with this email is already registered'
-        });
-      }
-      
-      throw dbError;
-    }
+    });
+
+    // Generate JWT with consistent fields
+    const token = jwt.sign(
+      {
+        sub: user.user_id.toString(), // sub must be string
+        user_id: user.user_id,
+        email: user.email,
+        full_name: user.full_name,
+        isowner: Number(user.isowner),
+        verified: user.verified
+      },
+      process.env.JWT_SECRET || 'dev-secret-key',
+      { expiresIn: '7d' }
+    );
+
+    // Return success with user data and token
+    res.status(201).json({
+      message: 'User registered successfully',
+      user: {
+        user_id: user.user_id,
+        email: user.email,
+        full_name: user.full_name,
+        isowner: user.isowner
+      },
+      token
+    });
   } catch (error) {
     console.error('Registration error:', error);
-    
-    if (!res.headersSent) {
-      if (error.status) {
-        return res.status(error.status).json({ error: error.message });
-      }
-      return res.status(500).json({ 
-        error: 'Registration failed',
-        details: process.env.NODE_ENV === 'development' ? error.message : 'Please try again later'
-      });
-    }
-    
-    next(error);
+    res.status(500).json({ error: 'Registration failed', details: error.message });
   }
 });
 
@@ -241,59 +105,50 @@ router.post('/register', async (req, res, next) => {
 router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    console.log('Login attempt for:', email);
 
-    // Validate input
-    if (!email || !password) {
-      throw new ValidationError('Email and password are required');
-    }
-
-    // Step 1: First check if user exists in public_users
-    const publicUser = await prisma.public_users.findUnique({
-      where: { email }
-    });
-
-    if (!publicUser) {
-      console.log('User not found in public_users database');
-      throw new ValidationError('Invalid credentials');
-    }
-
-    // Step 2: Authenticate via Supabase (which has the password)
-    const { data, error } = await supabaseAdmin.auth.signInWithPassword({
+    // First authenticate with Supabase
+    const { data: supabaseData, error: supabaseError } = await adminClient.auth.signInWithPassword({
       email,
       password
     });
 
-    if (error) {
-      console.error('Supabase authentication failed:', error.message);
+    if (supabaseError) {
       throw new ValidationError('Invalid credentials');
     }
+    
+    // If Supabase auth succeeds, get user from our database using email
+    const user = await prisma.users.findUnique({
+      where: { email }
+    });
 
-    console.log('Supabase authentication successful');
+    if (!user) {
+      throw new ValidationError('User not found');
+    }
 
-    // Step 3: Generate JWT token
+    // Generate JWT token with user info
     const token = jwt.sign(
-      { 
-        id: publicUser.user_id,
-        email: publicUser.email,
-        isowner: publicUser.isowner 
+      {
+        sub: user.user_id,
+        email: user.email,
+        name: user.full_name,
+        isowner: user.isowner
       },
       process.env.JWT_SECRET || 'dev-secret-key',
-      { expiresIn: '24h' }
+      { expiresIn: '7d' }
     );
 
-    console.log('Login successful for user:', email);
-
+    // Return user data and token
     res.json({
       user: {
-        user_id: publicUser.user_id,
-        full_name: publicUser.full_name,
-        email: publicUser.email,
-        isowner: Number(publicUser.isowner) || 0,
-        verified: publicUser.verified
+        user_id: user.user_id,
+        email: user.email,
+        full_name: user.full_name,
+        isowner: user.isowner,
+        verified: user.verified
       },
       token
     });
+
   } catch (error) {
     console.error('Login error:', error);
     next(error);
@@ -318,21 +173,24 @@ router.post('/sync-session', async (req, res) => {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    // Verify and decode the JWT token directly
+    // Verify and decode the JWT token
     try {
       console.log('Verifying token in sync-session');
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret-key');
       
-      if (!decoded || !decoded.email) {
+      if (!decoded || !decoded.sub) {
         console.log('Invalid token decoded in sync-session');
         return res.status(401).json({ error: 'Invalid token' });
       }
 
-      // Get user from database using email
-      console.log(`Looking up user with email: ${decoded.email}`);
-      const user = await prisma.public_users.findUnique({
+      // Get user from database using auth_user_id first, then fall back to email
+      console.log('Looking up user...');
+      const user = await prisma.users.findFirst({
         where: {
-          email: decoded.email
+          OR: [
+            { auth_user_id: decoded.sub },
+            { email: decoded.email }
+          ]
         },
         select: {
           user_id: true,
@@ -382,7 +240,15 @@ router.post('/sync-session', async (req, res) => {
  * @desc    Refresh an expired JWT token
  * @access  Public
  */
-router.post('/refresh-token', async (req, res) => {
+router.post('/refresh-token', rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // 20 requests per 15 minutes
+  message: { error: 'Too many token refresh attempts, please try again later' },
+  headers: true,
+  keyGenerator: (req) => {
+    return req.headers['x-forwarded-for'] || req.ip;
+  }
+}), async (req, res) => {
   try {
     const { token } = req.body;
 
@@ -390,13 +256,13 @@ router.post('/refresh-token', async (req, res) => {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    // Verify the token (but ignore expiration)
+    // Verify the token (ignore expiration)
     const decoded = jwt.verify(token, jwtConfig.secret, { ignoreExpiration: true });
 
-    // Get user from database - fixed to use public_users model for consistency
-    const user = await prisma.public_users.findUnique({
+    // Get user from database by email
+    const user = await prisma.users.findFirst({
       where: {
-        email: decoded.email
+        email: decoded.email.toLowerCase()
       }
     });
 
@@ -404,15 +270,18 @@ router.post('/refresh-token', async (req, res) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    // Generate new token
+    // Generate new token with consistent fields
     const newToken = jwt.sign(
-      { 
-        id: user.user_id,
+      {
+        sub: user.user_id.toString(),
+        user_id: user.user_id,
         email: user.email,
-        isowner: user.isowner 
+        full_name: user.full_name,
+        isowner: Number(user.isowner),
+        verified: user.verified
       },
       jwtConfig.secret,
-      { expiresIn: '24h' }
+      { expiresIn: '7d' }
     );
 
     res.json({
@@ -421,8 +290,8 @@ router.post('/refresh-token', async (req, res) => {
         user_id: user.user_id,
         email: user.email,
         full_name: user.full_name,
-        isowner: Number(user.isowner) || 0,
-        verified: user.verified
+        isowner: user.isowner === '1' ? '1' : '0',
+        verified: user.verified === '1' ? '1' : '0'
       }
     });
   } catch (error) {
@@ -432,83 +301,199 @@ router.post('/refresh-token', async (req, res) => {
 });
 
 /**
- * @route   POST /api/auth/change-password
- * @desc    Change user password (requires current password)
- * @access  Private
+ * Request password reset
+ */
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // First check if user exists in our database
+    const user = await prisma.users.findUnique({
+      where: { email }
+    });
+
+    if (!user) {
+      // Don't reveal that the user doesn't exist
+      return res.json({ 
+        message: 'If an account exists with this email, a password reset link will be sent.' 
+      });
+    }
+
+    // Send reset email via Supabase
+    const { error } = await adminClient.auth.resetPasswordForEmail(email, {
+      redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`
+    });
+
+    if (error) {
+      console.error('Failed to send reset password email:', error);
+      // Don't reveal error details to client
+      return res.json({ 
+        message: 'If an account exists with this email, a password reset link will be sent.' 
+      });
+    }
+
+    res.json({ message: 'Password reset email has been sent' });
+  } catch (error) {
+    console.error('Password reset error:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+/**
+ * Change password
  */
 router.post('/change-password', async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body;
+    console.log('Debug - Change Password Request:', {
+      hasToken: !!req.headers.authorization,
+      token: req.headers.authorization ? 'Bearer ...[truncated]' : 'missing',
+      hasCurrentPassword: !!req.body.currentPassword,
+      hasNewPassword: !!req.body.newPassword,
+      newPasswordLength: req.body.newPassword ? req.body.newPassword.length : 0
+    })
+
+    const { currentPassword, newPassword } = req.body
     
-    // Extract token from Authorization header
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    // Get authorization token
+    const token = req.headers.authorization?.replace('Bearer ', '')
     
     if (!token) {
-      return res.status(401).json({ error: 'Authentication required' });
+      console.log('Debug - No token provided')
+      return res.status(401).json({ error: 'Authentication required' })
     }
     
-    // Verify token to get user data
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret-key');
-      
-      if (!decoded || !decoded.email) {
-        return res.status(401).json({ error: 'Invalid token' });
-      }
-      
-      const email = decoded.email;
-      
-      // Get user from database to ensure they exist
-      const user = await prisma.public_users.findUnique({
-        where: { email }
-      });
-      
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      
-      // First verify the current password by attempting to sign in with Supabase
-      const { error: signInError } = await adminClient.auth.signInWithPassword({
-        email,
-        password: currentPassword
-      });
-      
-      if (signInError) {
-        return res.status(401).json({ 
-          error: 'Current password is incorrect',
-          message: 'The current password you entered is incorrect'
-        });
-      }
-      
-      // Update the password in Supabase
-      const { error: updateError } = await adminClient.auth.admin.updateUserById(
-        user.auth_user_id,
-        { password: newPassword }
-      );
-      
-      if (updateError) {
-        throw updateError;
-      }
-      
-      // Password changed successfully
-      res.json({ 
-        success: true,
-        message: 'Password changed successfully' 
-      });
-      
-    } catch (jwtError) {
-      console.error('JWT verification failed:', jwtError.message);
-      return res.status(401).json({ error: 'Authentication failed' });
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev-secret-key')
+    console.log('Debug - Token verified:', { sub: decoded.sub, email: decoded.email })
+
+    if (!decoded || !decoded.email) {
+      return res.status(401).json({ error: 'Invalid token' });
     }
     
+    const email = decoded.email;
+
+    // Get user from our database
+    const user = await prisma.users.findUnique({
+      where: { email }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // First verify current password with Supabase
+    const { error: signInError } = await adminClient.auth.signInWithPassword({
+      email,
+      password: currentPassword
+    });
+
+    if (signInError) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // If current password is correct, update password in Supabase
+    const { data: userData } = await adminClient.auth.updateUser({
+      password: newPassword
+    });
+
+    if (!userData?.user) {
+      throw new Error('Failed to update password');
+    }
+
+    res.json({ message: 'Password changed successfully' });
   } catch (error) {
     console.error('Password change error:', error);
-    
-    if (!res.headersSent) {
-      return res.status(500).json({ 
-        error: 'Failed to change password',
-        message: error.message
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+/**
+ * @route   POST /api/auth/logout
+ * @desc    Logout user from both Supabase and local session
+ * @access  Public
+ */
+router.post('/logout', async (req, res) => {
+  console.log('Processing logout request...');
+  try {
+    // Try to get the refresh token from the request if available
+    const refreshToken = req.body.refresh_token || req.cookies['sb-refresh-token'];
+
+    // Sign out from Supabase with the specific session if we have a refresh token
+    if (refreshToken) {
+      const { error } = await adminClient.auth.signOut({
+        refresh_token: refreshToken
+      });
+      if (error) {
+        console.warn('Supabase signout error:', error);
+      }
+    } else {
+      // Global signout if no specific session
+      const { error } = await adminClient.auth.signOut();
+      if (error) {
+        console.warn('Supabase global signout error:', error);
+      }
+    }
+
+    // Clear all authentication-related cookies
+    const cookiesToClear = [
+      'token',
+      'session',
+      'sb-refresh-token',
+      'sb-access-token',
+      'camping.sid',
+      'auth_token'
+    ];
+
+    cookiesToClear.forEach(cookie => {
+      res.clearCookie(cookie, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/'
+      });
+    });
+
+    // Destroy Express session if it exists
+    if (req.session) {
+      req.session.destroy(err => {
+        if (err) {
+          console.warn('Session destruction error:', err);
+        }
       });
     }
+
+    console.log('Logout successful');
+    res.status(200).json({ message: 'Logged out successfully' });
+  } catch (error) {
+    console.error('Logout error:', error);
+    // Even if there's an error, we want to clear cookies and return success
+    // This ensures the client can still "log out" even if server-side cleanup fails
+    const cookiesToClear = [
+      'token',
+      'session',
+      'sb-refresh-token',
+      'sb-access-token',
+      'camping.sid',
+      'auth_token'
+    ];
+
+    cookiesToClear.forEach(cookie => {
+      res.clearCookie(cookie, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        path: '/'
+      });
+    });
+
+    res.status(200).json({ 
+      message: 'Logged out successfully',
+      warning: 'Some cleanup operations may have failed'
+    });
   }
 });
 

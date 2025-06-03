@@ -1,230 +1,247 @@
 const express = require('express');
 const path = require('path');
 const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
 const cors = require('cors');
 const logger = require('morgan');
-const helmet = require('helmet');
-const prisma = require('./config/prisma');
-
-// Import routes
-const authRoutes = require('../features/auth/routes');
-const userRoutes = require('../features/users/routes');
+const compression = require('compression');
+const { prisma } = require('../config/database');
+const corsMiddleware = require('./middleware/new-cors-config.js');
+const { authenticate } = require('../middleware/auth');
+const authRoutes = require('../routes/auth');
+const session = require('express-session');
 const campingSpotsRoutes = require('../features/camping/routes');
-const bookingRoutes = require('../features/bookings/routes');
-const reviewRoutes = require('../features/reviews/routes');
-const dashboardRoutes = require('../features/dashboard/routes');
-
-// Import middleware
-const { errorHandler } = require('../shared/middleware/error');
-const routeAccessMiddleware = require('../shared/middleware/route-access');
-const { authenticate } = require('../features/auth/middleware');
-const { optionalAuthenticate } = require('../features/auth/middleware');
 
 // Create Express app
 const app = express();
 
-// Basic middleware
+// Basic middleware setup
 app.use(logger('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(compression());
+
+// Session configuration
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'dev-secret-key',
+    resave: false,
+    saveUninitialized: false,
+    name: 'camping.sid',
+    cookie: {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    }
+}));
 
 // Security middleware
 app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", process.env.NODE_ENV === 'development' ? '*' : '']
-    }
-  },
-  crossOriginEmbedderPolicy: false,
-  crossOriginResourcePolicy: { policy: "cross-origin" }
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Enhanced CORS configuration
-app.use(cors({
-  origin: (origin, callback) => {
-    const allowedOrigins = [
-      process.env.FRONTEND_URL,
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'https://airbnb-frontend-i8p5-git-main-karoliskalinauskas1s-projects.vercel.app',
-      'https://airbnb-frontend-gamma.vercel.app',
-      'https://*.vercel.app'
-    ].filter(Boolean);
-
-    if (!origin || allowedOrigins.some(allowed => {
-      if (allowed.includes('*')) {
-        const domain = allowed.replace('*', '.*');
-        return new RegExp(`^${domain}$`).test(origin);
-      }
-      return origin === allowed;
-    })) {
-      callback(null, true);
-    } else {
-      callback(new Error(`Origin ${origin} not allowed by CORS policy`));
+// CORS configuration with credentials support
+app.use((req, res, next) => {
+    const origin = req.headers.origin || '*';
+    
+    // Always set basic CORS headers
+    res.header('Access-Control-Allow-Origin', origin);
+    if (origin !== '*') {
+        res.header('Access-Control-Allow-Credentials', 'true');
     }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Requested-With',
-    'Accept',
-    'Origin',
-    'X-CSRF-Token'
-  ],
-  exposedHeaders: ['Content-Range', 'X-Total-Count'],
-  credentials: true,
-  maxAge: 86400,
-  preflightContinue: false,
-  optionsSuccessStatus: 204
-}));
-
-// Health check endpoints
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
-});
-
-app.get('/ping', (req, res) => {
-  res.status(200).json({ status: 'pong' });
-});
-
-app.get('/api/ping', (req, res) => {
-  res.status(200).json({ status: 'pong' });
-});
-
-// Database connection check middleware
-app.use(async (req, res, next) => {
-  try {
-    // Import the connection helper
-    const { ensureConnection } = require('./config/prisma');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route');
     
-    // Try to ensure connection before proceeding
-    await ensureConnection();
+    // Handle preflight requests
+    if (req.method === 'OPTIONS') {
+        res.header('Access-Control-Max-Age', '86400');
+        return res.status(204).end();
+    }
     
-    // If we get here, the connection is established
     next();
-  } catch (error) {
-    console.error('Database connection error in middleware:', error);
-    res.status(503).json({ 
-      error: 'Database service unavailable', 
-      message: 'The server is experiencing database connectivity issues. Please try again later.'
+});
+
+// Configure CORS for public endpoints
+const publicEndpoints = [
+    '/api/amenities',
+    '/api/countries',
+    '/api/camping-spots/amenities',
+    '/api/camping-spots/countries'
+];
+
+// Apply CORS and cache headers to public endpoints
+app.use((req, res, next) => {
+    // Always set CORS headers for OPTIONS requests
+    if (req.method === 'OPTIONS') {
+        res.set({
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+            'Access-Control-Max-Age': '86400'
+        });
+        return res.status(204).end();
+    }
+
+    // For public endpoints, add appropriate headers
+    if (publicEndpoints.some(path => req.path === path)) {
+        res.set({
+            'Cache-Control': 'public, max-age=300',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+            'Access-Control-Allow-Credentials': 'true'
+        });
+    }
+    next();
+});
+
+// Health check routes
+app.get(['/health', '/api/health'], (req, res) => {
+    res.status(200).json({ 
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
     });
-  }
 });
 
-// Handle preflight requests for all routes
-app.options('*', (req, res) => {
-  const origin = req.headers.origin;
-  res.header('Access-Control-Allow-Origin', origin);
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, access-control-allow-origin');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Max-Age', '86400'); // 24 hours
-  res.status(204).end();
-});
-
-// Apply route access middleware BEFORE mounting routes
-app.use('/api', (req, res, next) => {
-  console.log('API request received:', req.method, req.path);
-  routeAccessMiddleware(req, res, next);
-});
-
-// Mount routes after middleware
+// Mount auth routes first (they handle their own auth)
 app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
+
+// Public amenities endpoint with explicit response handlers
+app.get(['/api/amenities', '/api/camping-spots/amenities'], async (req, res) => {
+    // Handle OPTIONS requests
+    if (req.method === 'OPTIONS') {
+        res.set({
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+            'Access-Control-Max-Age': '86400'
+        });
+        return res.status(204).end();
+    }
+
+    // Add CORS headers for public endpoint
+    res.set({
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+        'Cache-Control': 'public, max-age=300'
+    });
+
+    try {
+        const amenities = await prisma.amenity.findMany({
+            orderBy: { name: 'asc' }
+        });
+        
+        if (!amenities || amenities.length === 0) {
+            return res.status(404).json({ error: 'No amenities found' });
+        }
+        
+        res.json(amenities);
+    } catch (error) {
+        console.error('Error fetching amenities:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch amenities',
+            message: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+// Public countries endpoint with explicit response handlers
+app.get(['/api/countries', '/api/camping-spots/countries'], async (req, res) => {
+    // Handle OPTIONS requests
+    if (req.method === 'OPTIONS') {
+        res.set({
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+            'Access-Control-Max-Age': '86400'
+        });
+        return res.status(204).end();
+    }
+
+    // Add CORS headers for public endpoint
+    res.set({
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+        'Cache-Control': 'public, max-age=300'
+    });
+
+    try {
+        const countries = await prisma.country.findMany({
+            orderBy: { name: 'asc' }
+        });
+        
+        if (!countries || countries.length === 0) {
+            return res.status(404).json({ error: 'No countries found' });
+        }
+        
+        res.json(countries);
+    } catch (error) {
+        console.error('Error fetching countries:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch countries',
+            message: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
+// Handle camping spots routes - uses routes from src/features/camping/routes.js which handles auth properly
 app.use('/api/camping-spots', campingSpotsRoutes);
-app.use('/api/geocoding', campingSpotsRoutes);
 
-// Mount bookings routes
-app.use('/api/bookings', bookingRoutes);
-
+// Protected routes - require authentication
+app.use('/api/users', authenticate, userRoutes);
+app.use('/api/bookings', authenticate, bookingRoutes);
 app.use('/api/reviews', authenticate, reviewRoutes);
 app.use('/api/dashboard', authenticate, dashboardRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  if (err) {
-    console.error('API Error:', {
-      path: req.path,
-      method: req.method,
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    if (err) {
+        console.error('API Error:', {
+            path: req.path,
+            method: req.method,
+            error: err.message,
+            stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        });
+
+        if (err.name === 'ValidationError') {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: err.message,
+                details: err.details
+            });
+        }
+
+        if (err.name === 'PrismaClientKnownRequestError') {
+            return res.status(400).json({
+                error: 'Database Error',
+                message: 'Invalid data provided',
+                code: err.code
+            });
+        }
+
+        // Default error response
+        res.status(err.status || 500).json({
+            error: err.message || 'Internal Server Error',
+            details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        });
+    }
+});
+
+// Helper function to add CORS and cache headers for public routes
+const addPublicRouteHeaders = (res) => {
+    res.set({
+        'Cache-Control': 'public, max-age=300',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route',
+        'Access-Control-Allow-Credentials': 'true'
     });
-
-    // Handle specific error types
-    if (err.name === 'ValidationError') {
-      return res.status(400).json({
-        error: 'Validation Error',
-        message: err.message,
-        details: err.details
-      });
-    }
-
-    if (err.name === 'PrismaClientKnownRequestError') {
-      return res.status(400).json({
-        error: 'Database Error',
-        message: 'Invalid data provided',
-        code: err.code
-      });
-    }
-
-    if (err.name === 'PrismaClientInitializationError') {
-      return res.status(503).json({
-        error: 'Database Service Unavailable',
-        message: 'Database connection failed'
-      });
-    }
-
-    // Default error response
-    res.status(err.status || 500).json({
-      error: err.name || 'Server Error',
-      message: err.message || 'An unexpected error occurred',
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-    });
-  }
-});
-
-// Handle 404 errors
-app.use((req, res) => {
-  res.status(404).json({ 
-    error: 'Not Found',
-    message: `${req.method} ${req.path} not found`,
-    suggestions: [
-      'Check the URL and try again',
-      'Refer to /api/docs for API documentation',
-      'Contact support if you believe this is a mistake'
-    ]
-  });
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled promise rejection:', error);
-  // Log to monitoring service in production
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
-  // Log to monitoring service before exiting
-  process.exit(1);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  await prisma.$disconnect();
-  process.exit(0);
-});
+};
 
 module.exports = app;

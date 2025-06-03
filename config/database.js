@@ -26,33 +26,10 @@ class DatabaseService extends EventEmitter {
       console.error('❌ ' + error.message);
       console.error('   Please check your .env file and ensure DATABASE_URL is set correctly');
       return;
-    }
-
-    // Try to create Prisma client with error handling
+    }    // Try to create Prisma client with error handling
     try {
       this.prisma = new PrismaClient({
-        log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
-        errorFormat: 'pretty',
-        datasources: {
-          db: {
-            url: process.env.DATABASE_URL
-          }
-        },
-        // Add connection pooling configuration
-        connection: {
-          pool: {
-            min: 2,
-            max: 10,
-            idleTimeoutMillis: 60000,
-            acquireTimeoutMillis: 60000
-          }
-        },
-        // Add query logging in development
-        __internal: {
-          engine: {
-            queryLogging: process.env.NODE_ENV === 'development'
-          }
-        }
+        log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error']
       });
 
       // Create singleton instance
@@ -255,6 +232,14 @@ class DatabaseService extends EventEmitter {
   }
 }
 
-// Export a singleton instance
+// Initialize Prisma client
+const prisma = new PrismaClient({
+  log: ['warn', 'error']
+});
+
+// Export a singleton instance and prisma client
 const dbService = new DatabaseService();
-module.exports = dbService;
+module.exports = { 
+  default: dbService,
+  prisma: dbService.prisma
+};

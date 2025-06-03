@@ -1,176 +1,55 @@
-const { authenticate } = require('./auth');
-
-// List of routes that should be public (no authentication required)
-const publicRoutes = [
-  // Auth routes
-  '/auth/signin',
-  '/auth/login',
-  '/auth/signup',
-  '/auth/register',
-  '/auth/reset-password',
-  '/auth/update-password',
-  '/auth/refresh-token',
-  '/auth/status',
-  '/auth/session',
-  '/auth/restore-session',
-  '/auth/verify-token',
-  '/auth/sync-session',
-  '/auth/logout',
-  '/auth/signout',
-  
-  // Auth routes with api prefix
-  '/api/auth/signin',
-  '/api/auth/signup',
-  '/api/auth/login',
-  '/api/auth/register',
-  '/api/auth/reset-password',
-  '/api/auth/update-password',
-  '/api/auth/refresh-token',
-  '/api/auth/status',
-  '/api/auth/session',
-  '/api/auth/restore-session',
-  '/api/auth/verify-token',
-  '/api/auth/sync-session',
-  '/api/auth/logout',
-  '/api/auth/signout',
-
-  // Camping spots routes (public access)
-  '/api/camping-spots',
-  '/api/camping-spots/search',
-  '/api/camping-spots/featured',
-  '/api/camping-spots/:id',
-  '/api/camping-spots/nearby',
-  '/api/camping-spots/amenities',
-  '/camping-spots',
-  '/camping-spots/search',
-  '/camping-spots/featured',
-  '/camping-spots/:id',
-  '/camping-spots/nearby',
-  '/camping-spots/amenities',
-
-  // API info routes
-  '/api',
-  '/api/ping',
-  '/api/docs',
-  '/api/docs/json',
-  '/api/status',
-  '/api/health',
-    // OAuth routes
-  '/api/auth/oauth/google/login',
-  '/api/auth/oauth/google/callback',
-  '/auth/oauth/google/login',
-  '/auth/oauth/google/callback',
-  '/api/auth/oauth/google/supabase-callback', // Supabase callback handler
-  
-    // Public data routes - only for GET requests (POST requires auth)
-  // Routes for specific camping spots features that are public
-  '/api/camping-spots/search',
-  '/camping-spots/search',
-  '/api/camping-spots/featured',
-  '/camping-spots/featured',
-  '/api/camping-spots/nearby',
-  '/camping-spots/nearby',
-  '/api/camping-spots/geocoding/search',
-  '/camping-spots/geocoding/search',  '/api/geocoding/search',
-  '/geocoding/search',
-  '/api/locations',
-  '/locations',
-  '/api/countries',
-  '/countries',
-  '/api/camping-spots',
-  '/camping-spots',
-  '/api/camping-spots/search',
-  '/api/camping-spots/:id',
-  '/api/camping-spots/amenities',
-  '/api/amenities',
-  '/amenities',  '/api/camping-spots/amenities',
-  '/camping-spots/amenities',
-  '/api/camping-spots/countries',
-  '/camping-spots/countries',
-  
-  // Booking success route
-  '/api/bookings/success',
-  '/bookings/success'
-];
-
-// List of public route patterns (for routes with parameters)
-const publicPatterns = [  
-  /^\/?(api\/)?auth\/(register|login|signin|signup|reset\-password|update\-password|refresh\-token)(\?.*)?$/,  // Auth routes with parameters
-  /^\/?(api\/)?auth\/oauth\/google\/(login|callback|supabase-callback)(\?.*)?$/, // OAuth Google routes with parameters
-  /^\/social-auth-success(\?.*)?$/, // Social auth success page with any query parameters
-  /^\/?(api\/)?camping-spots\/\d+(\/?)?$/, // Individual camping spot details
-  /^\/?(api\/)?camping-spots\/\d+\/reviews(\/?)?$/, // Individual camping spot reviews
-  // Note: We now handle camping-spots separately based on HTTP method below
-  /^\/?(api\/)?camping-spots\/geocoding\/search(\?.*)?$/, // Allow geocoding search
-  /^\/?(api\/)?geocoding\/search(\?.*)?$/, // Allow direct geocoding search
-  /^\/?(api\/)?camping-spots\/search(\?.*)?$/, // Allow search
-  /^\/?(api\/)?camping-spots\/featured(\/)?$/, // Allow featured spots
-  /^\/?(api\/)?camping-spots\/nearby(\/)?(\?.*)?$/, // Allow nearby spots  
-  /^\/?(api\/)?locations(\/)?$/, // Allow locations
-  /^\/?(api\/)?countries(\/)?$/, // Allow countries
-  /^\/?(api\/)?amenities(\/)?$/ // Allow amenities
-];
-
-// List of owner-only routes
-const ownerRoutes = [
-  '/api/dashboard/spots',
-  '/dashboard/spots',
-  '/api/dashboard/bookings',
-  '/dashboard/bookings'
-];
+const { authenticate, optionalAuthenticate } = require('./auth');
+const { isPublicRoute } = require('../config/public-paths');
 
 // Middleware to check if a route should be public or protected
 const routeAccessMiddleware = (req, res, next) => {
-  const path = req.path;
-  const method = req.method;
-  const fullUrl = req.originalUrl || req.url;
+    try {
+        const path = req.path;
+        const method = req.method;
 
-  console.log('Route access check:', {
-    path,
-    method,
-    fullUrl,
-    headers: req.headers
-  });
+        // Always allow OPTIONS requests for CORS
+        if (method === 'OPTIONS') {
+            const origin = req.headers.origin || '*';
+            res.header('Access-Control-Allow-Origin', origin);
+            res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+            res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route');
+            res.header('Access-Control-Max-Age', '86400'); // 24 hours
+            return res.status(204).end();
+        }
 
-  // Always allow OPTIONS requests (for CORS)
-  if (method === 'OPTIONS') {
-    console.log('Allowing OPTIONS request');
-    return next();
-  }
+        // Special handling for public endpoints
+        const publicPaths = [
+            '/amenities',
+            '/countries',
+            '/camping-spots/amenities',
+            '/camping-spots/countries',
+            '/api/amenities',
+            '/api/countries',
+            '/api/camping-spots/amenities',
+            '/api/camping-spots/countries'
+        ];
 
-  // Check if the route is in the public routes list
-  if (publicRoutes.includes(path)) {
-    console.log('Public route match found:', path);
-    return next();
-  }
+        const normalizedPath = path.toLowerCase();
+        const isPublicEndpoint = publicPaths.some(p => normalizedPath === p || normalizedPath.endsWith(p));
 
-  // Check if the route matches any public patterns
-  const matchingPattern = publicPatterns.find(pattern => pattern.test(fullUrl));
-  if (matchingPattern) {
-    console.log('Public pattern match found:', {
-      path,
-      pattern: matchingPattern.toString()
-    });
-    return next();
-  }
-  // For camping spots routes, only allow GET without auth, require auth for POST/PUT/DELETE
-  if ((path.startsWith('/api/camping-spots') || path.startsWith('/camping-spots'))) {
-    if (method === 'GET') {
-      console.log('Allowing GET request to camping spots');
-      return next();
-    } else {
-      console.log('Requiring auth for non-GET camping spots request:', method, path);
-      return authenticate(req, res, next);
+        if (isPublicEndpoint || req.headers['x-public-route'] === 'true') {
+            // Add CORS headers for public endpoints
+            res.header('Access-Control-Allow-Origin', '*');
+            res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+            res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+            res.header('Cache-Control', 'public, max-age=300');
+            return next();
+        }
+
+        // For all other routes, require authentication
+        return authenticate(req, res, next);
+    } catch (error) {
+        console.error('Route access middleware error:', error);
+        return res.status(500).json({
+            error: 'Internal server error',
+            message: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
     }
-  }
-
-  // For all other routes, require authentication
-  console.log('No public match found, requiring authentication for:', {
-    path,
-    method,
-    fullUrl
-  });
-  return authenticate(req, res, next);
 };
 
 module.exports = routeAccessMiddleware;

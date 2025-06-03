@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
-const prisma = require('../config/prisma');
-const { ValidationError, NotFoundError, ForbiddenError } = require('../middleware/error');
+const { authenticate } = require('../../middlewares/auth');
+const prisma = require('../../config/database');
+const { ValidationError, NotFoundError, ForbiddenError } = require('../../middlewares/error-handler');
 
 // Apply authentication middleware to all routes
 router.use(authenticate);
@@ -18,7 +18,7 @@ router.get('/full-info', async (req, res) => {
     const { email } = req.user;
 
     // Fetch user with related data using either user_id or email
-    const user = await prisma.public_users.findUnique({
+    const user = await prisma.users.findUnique({
       where: {
         email: email
       },
@@ -52,19 +52,17 @@ router.get('/full-info', async (req, res) => {
       created_at: user.created_at,
       updated_at: user.updated_at,
       bookings: user.bookings.map(booking => ({
-        booking_id: booking.booking_id,
-        start_date: booking.start_date,
+        booking_id: booking.booking_id,        start_date: booking.start_date,
         end_date: booking.end_date,
-        status: booking.status_booking_transaction.status,
-        cost: booking.cost,
-        camping_spot: {
+        status: booking.status_booking_transaction?.status || 'Unknown',
+        cost: booking.cost,        camping_spot: booking.camping_spot ? {
           camping_spot_id: booking.camping_spot.camping_spot_id,
           title: booking.camping_spot.title,
           description: booking.camping_spot.description,
           price_per_night: booking.camping_spot.price_per_night,
           location: booking.camping_spot.location,
           images: booking.camping_spot.images
-        }
+        } : null
       })),
       reviews: user.review.map(review => ({
         review_id: review.review_id,
@@ -83,107 +81,146 @@ router.get('/full-info', async (req, res) => {
 
 /**
  * @route   GET /api/users/me
- * @desc    Get current user's basic information
+ * @desc    Get current user's information
  * @access  Private
  */
-router.get('/me', async (req, res) => {
+router.get('/me', authenticate, async (req, res) => {
   try {
-    // If user authentication fails, provide a detailed log but a generic response
+    // Set a longer request timeout for this endpoint
+    if (req.setTimeout) {
+      req.setTimeout(15000);
+    }
+
+    // Check for user object from auth middleware
     if (!req.user) {
-      console.error('No user object in request. Auth middleware may not be working correctly.');
+      console.error('No user object in request. Auth middleware may not be working correctly.', {
+        headers: req.headers,
+        session: req.session,
+        timestamp: new Date().toISOString()
+      });
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    // Log user info from token for debugging
-    console.log('User from token:', { 
+    // Log debugging info
+    console.log('Fetching user info for:', {
       id: req.user.user_id,
-      email: req.user.email 
+      email: req.user.email,
+      timestamp: new Date().toISOString()
     });
 
-    // HANDLE DATABASE CONNECTION ISSUES - Return mock data for development/testing
-    // This allows frontend testing even when database is having issues
-    if (process.env.ALLOW_MOCK_USER === 'true' || process.env.NODE_ENV === 'development') {
-      console.log('Using mock user data due to database issues');
-      return res.json({
-        user_id: req.user.user_id,
-        full_name: req.user.full_name || 'Test User',
-        email: req.user.email,
-        isowner: '1',
-        verified: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      });
-    }    // Get Supabase auth user ID (UUID from token)
-    const supabaseAuthId = req.user.auth_user_id;
-    
-    if (!supabaseAuthId) {
-      console.error('Missing auth_user_id:', req.user);
-      return res.status(500).json({ error: 'Missing authentication ID' });
-    }
+    // Get fresh user data from database with retry logic
+    let retryCount = 0;
+    const maxRetries = 3;
+    let lastError;
 
-    try {
-      // First try to find user by auth_user_id (the UUID from Supabase)
-      const user = await prisma.public_users.findFirst({
-        where: { auth_user_id: supabaseAuthId },
-        select: {
-          user_id: true,
-          full_name: true,
-          email: true,
-          isowner: true,
-          verified: true,
-          created_at: true,
-          updated_at: true
-        }
-      });
+    while (retryCount < maxRetries) {
+      try {
+        // Test database connection first
+        await prisma.$queryRaw`SELECT 1`;
 
-      // If that fails, fall back to finding by email
-      if (!user && req.user.email) {
-        const userByEmail = await prisma.public_users.findUnique({
+        const user = await prisma.users.findUnique({
           where: { email: req.user.email },
           select: {
             user_id: true,
-            full_name: true,
             email: true,
+            full_name: true,
             isowner: true,
             verified: true,
+            auth_user_id: true,
             created_at: true,
             updated_at: true
           }
         });
-        
-        if (userByEmail) {
-          console.log(`Found user by email: ${req.user.email}`);
-          return res.json({
-            ...userByEmail,
-            isowner: userByEmail.isowner === '1' ? '1' : '0'
+
+        if (!user) {
+          console.error('User not found in database:', {
+            email: req.user.email,
+            userId: req.user.user_id,
+            timestamp: new Date().toISOString()
+          });
+          return res.status(404).json({ 
+            error: 'User not found',
+            message: 'Your user account could not be found in the database'
           });
         }
+
+        // Format response data
+        const userData = {
+          user_id: Number(user.user_id),
+          email: user.email,
+          full_name: user.full_name,
+          isowner: Number(user.isowner) || 0,
+          verified: user.verified === '1' || user.verified === 'yes',
+          auth_user_id: user.auth_user_id,
+          created_at: user.created_at,
+          updated_at: user.updated_at
+        };
+
+        // Log successful response
+        console.log('Successfully fetched user data:', {
+          userId: userData.user_id,
+          email: userData.email,
+          timestamp: new Date().toISOString()
+        });
+
+        // Send response with fresh user data
+        return res.json(userData);
+      } catch (error) {
+        lastError = error;
+        console.error(`Database query attempt ${retryCount + 1} failed:`, {
+          error: error.message,
+          code: error.code,
+          timestamp: new Date().toISOString()
+        });
+
+        if (error.code === 'P2002' || error.code === 'P2025') {
+          // Data integrity errors - no point in retrying
+          break;
+        }
+
+        retryCount++;
+        if (retryCount < maxRetries) {
+          // Wait before retrying - exponential backoff
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, retryCount) * 1000));
+        }
       }
+    }
 
-      if (!user) {
-        console.error('User not found with auth_user_id:', supabaseAuthId);
-        return res.status(404).json({ error: 'User not found' });
-      }
+    // If we get here, all retries failed
+    console.error('All database retries failed:', {
+      error: lastError.message,
+      stack: lastError.stack,
+      timestamp: new Date().toISOString()
+    });
 
-      // Format response data
-      const userData = {
-        ...user,
-        isowner: user.isowner === '1' ? '1' : '0' // Ensure consistent string format for isowner
-      };
-
-      res.json(userData);
-    } catch (dbError) {
-      console.error('Database error fetching user:', dbError);
-      res.status(500).json({ 
-        error: 'Database error',
-        message: process.env.NODE_ENV === 'development' ? dbError.message : 'Error retrieving user data'
+    if (lastError.code === 'P2002' || lastError.code === 'P2025') {
+      return res.status(404).json({ 
+        error: 'User data integrity error',
+        message: 'There was an issue with your user account data'
       });
     }
+
+    return res.status(503).json({
+      error: 'Database connection failed',
+      message: 'Unable to retrieve your user information. Please try again later.'
+    });
   } catch (error) {
-    console.error('Error fetching user:', error);
-    res.status(500).json({ 
+    console.error('Unhandled error in /users/me route:', {
+      error: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString()
+    });
+
+    if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+      return res.status(504).json({ 
+        error: 'Request timed out',
+        message: 'The request timed out while fetching your user data'
+      });
+    }
+
+    return res.status(500).json({ 
       error: 'Internal server error',
-      message: process.env.NODE_ENV === 'development' ? error.message : 'Error fetching user data'
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred'
     });
   }
 });

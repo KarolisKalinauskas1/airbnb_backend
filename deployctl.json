@@ -1,6 +1,0 @@
-{
-  "buildCommand": "npm install && npx prisma generate --schema=./prisma/schema.prisma",
-  "startCommand": "npm start",
-  "healthcheckPath": "/api/health",
-  "healthcheckTimeout": 300
-}
