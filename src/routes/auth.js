@@ -12,35 +12,141 @@ const { adminClient: supabaseAdmin } = require('../../config/supabase');
 const { registerUserSchema, loginUserSchema } = require('../../schemas/user-schemas');
 // Import adminClient from the correct location for user creation
 const { adminClient } = require('../../config/supabase');
+const { createOwnerRecord } = require('../utils/owner-helpers');
 
 /**
  * Helper function to create owner record if needed
  */
 async function createOwnerIfNeeded(userId, license = 'none') {
+  // Input validation
+  if (!userId) {
+    console.error('Cannot create owner record: Missing userId');
+    return false;
+  }
+
+  // Ensure userId is a number
+  const ownerId = typeof userId === 'string' ? parseInt(userId, 10) : userId;
+  
+  if (isNaN(ownerId)) {
+    console.error('Cannot create owner record: Invalid userId format', { userId });
+    return false;
+  }
+
+  // Normalize license value
+  const normalizedLicense = license && license !== '' ? license : 'none';
+
+  console.log('Creating/verifying owner record:', {
+    userId: ownerId,
+    license: normalizedLicense,
+    originalUserId: userId,
+    originalLicense: license
+  });
+
   try {
+    // First verify the user exists
+    const user = await prisma.users.findUnique({
+      where: { user_id: ownerId }
+    });
+
+    if (!user) {
+      console.error(`Cannot create owner record: User ${ownerId} not found in users table`);
+      return false;
+    }
+
     // Check if owner record already exists
     const existingOwner = await prisma.owner.findUnique({
-      where: { owner_id: userId }
+      where: { owner_id: ownerId }
     });
     
-    // Only create if it doesn't exist
     if (!existingOwner) {
+      // Create new owner record
+      await prisma.owner.create({
+        data: {
+          owner_id: ownerId,
+          license: normalizedLicense
+        }
+      });
+      console.log(`Created owner record for user ${ownerId} with license: ${normalizedLicense}`);
+
+      // Update user record to ensure isowner is set
+      await prisma.users.update({
+        where: { user_id: ownerId },
+        data: { isowner: '1' }
+      });
+      console.log(`Updated user ${ownerId} isowner status to 1`);
+    } else {
+      console.log(`Owner record exists for user ${ownerId}`);
+      
+      // Update license if different
+      if (normalizedLicense !== existingOwner.license) {
+        await prisma.owner.update({
+          where: { owner_id: ownerId },
+          data: { license: normalizedLicense }
+        });
+        console.log(`Updated license for owner ${ownerId} from "${existingOwner.license}" to "${normalizedLicense}"`);
+      }
+
+      // Ensure user record shows as owner
+      if (user.isowner !== '1') {
+        await prisma.users.update({
+          where: { user_id: ownerId },
+          data: { isowner: '1' }
+        });
+        console.log(`Corrected user ${ownerId} isowner status to 1`);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Failed to create/verify owner record:', {
+      userId: ownerId,
+      error: error.message,
+      code: error.code,
+      meta: error.meta
+    });
+    return false;
+  }
+}
+
+/**
+ * Helper function to safely create owner record with retries
+ */
+async function createOwnerRecord(userId, license = 'none', maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Check if owner record already exists
+      const existingOwner = await prisma.owner.findUnique({
+        where: { owner_id: userId }
+      });
+      
+      if (existingOwner) {
+        console.log(`Owner record already exists for user ${userId}`);
+        return true;
+      }
+
+      // Create owner record
       await prisma.owner.create({
         data: {
           owner_id: userId,
           license: license || 'none'
         }
       });
-      console.log(`Created owner record for user: ${userId}, license: ${license || 'none'}`);
-    } else {
-      console.log(`Owner record already exists for user: ${userId}`);
+      
+      console.log(`Successfully created owner record for user ${userId}, license: ${license || 'none'}`);
+      return true;
+    } catch (error) {
+      console.error(`Failed to create owner record (attempt ${attempt}/${maxRetries}):`, error);
+      
+      if (attempt === maxRetries) {
+        console.error('Max retries reached for owner record creation');
+        return false;
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
     }
-    
-    return true;
-  } catch (error) {
-    console.error(`Failed to create/verify owner record for user ${userId}:`, error);
-    return false;
   }
+  return false;
 }
 
 /**
@@ -63,17 +169,23 @@ router.post('/register', async (req, res, next) => {
       req.body.full_name = req.body.name;
     }
     
-    // Handle is_seller/isowner field mapping - normalize to is_seller
-    if (req.body.isowner !== undefined && req.body.is_seller === undefined) {
-      req.body.is_seller = req.body.isowner;
-    }
+    // Normalize owner status from all possible fields
+    const isOwner = req.body.is_seller === '1' || 
+                    req.body.is_seller === true || 
+                    req.body.is_seller === 1 ||
+                    req.body.isowner === '1' || 
+                    req.body.isowner === true || 
+                    req.body.isowner === 1;
     
-    // Log the received data after field mapping
+    req.body.is_seller = isOwner;
+    
+    // Log the received data after normalization
     console.log('Registration endpoint called with data:', { 
       email: req.body.email,
       has_password: !!req.body.password,
       full_name: req.body.full_name,
-      is_seller: req.body.is_seller
+      is_seller: req.body.is_seller,
+      license: req.body.license
     });
     
     // Apply schema validation after field mapping
@@ -94,8 +206,9 @@ router.post('/register', async (req, res, next) => {
       throw error;
     }
 
-    const { email, password, full_name, is_seller, license } = req.body;
-      // Check if user already exists in the database
+    const { email, password, full_name, license } = req.body;
+    
+    // Check if user already exists in our database
     console.log('Checking if user already exists in users table...');
     const existingUser = await prisma.users.findUnique({
       where: { email }
@@ -114,7 +227,7 @@ router.post('/register', async (req, res, next) => {
       options: {
         data: { 
           full_name,
-          isowner: is_seller ? 1 : 0
+          isowner: isOwner ? 1 : 0
         }
       }
     });
@@ -137,31 +250,42 @@ router.post('/register', async (req, res, next) => {
     let user;
     try {
       console.log('Creating user in public_users table...');
-      console.log('Data for new user:', {
-        email,
-        full_name,
-        isowner: is_seller ? 1 : 0
-      });
-        user = await prisma.users.create({
-        data: {
-          email,
-          full_name: full_name || email.split('@')[0],
-          verified: 'no',
-          isowner: is_seller ? '1' : '0',
-          created_at: new Date(),
-          updated_at: new Date()
-        }
-      });
       
+      // Create user with transaction to ensure both user and owner records are created
+      user = await prisma.$transaction(async (prisma) => {
+        // Create the user
+        const newUser = await prisma.users.create({
+          data: {
+            email,
+            full_name,
+            verified: 'no',
+            isowner: isOwner ? '1' : '0', 
+            created_at: new Date(),
+            updated_at: new Date(),
+            auth_user_id: data.user.id 
+          }
+        });
+
+        // Create owner record if needed
+        if (isOwner) {
+          try {
+            const ownerCreated = await createOwnerRecord(newUser.user_id, license);
+            if (!ownerCreated) {
+              throw new Error('Failed to create owner record');
+            }
+            console.log('Created owner record for user:', newUser.user_id);
+          } catch (ownerError) {
+            console.error('Failed to create owner record:', ownerError);
+            throw ownerError; // This will rollback the transaction
+          }
+        }
+
+        return newUser;
+      });
+
       console.log('User created in public_users table, ID:', user.user_id);
 
-      // Create owner record if needed
-      if (is_seller) {
-        console.log('Creating owner record...');
-        await createOwnerIfNeeded(user.user_id, license);
-      }
-      
-      // Send welcome email to the new user
+      // Send welcome email
       try {
         const EmailService = require('../shared/services/email.service');
         await EmailService.sendWelcomeEmail(user);
@@ -171,21 +295,18 @@ router.post('/register', async (req, res, next) => {
         // Don't fail registration if email fails
       }
       
-      // Check if session exists before attempting to use it
+      // Set up session if available
       if (req.session) {
-        // Create session
         console.log('Setting up user session...');
         req.session.userId = user.user_id;
         req.session.email = user.email;
-        req.session.isowner = user.isowner; // Will be '1' or '0'
+        req.session.isowner = user.isowner; 
         req.session.auth_user_id = user.auth_user_id;
         console.log('Session created successfully');
       } else {
-        console.log('Warning: Session object is not available. Session data not stored.');
-        // Continue without creating a session - the user will still be registered
+        console.log('Warning: Session object is not available');
       }
       
-      console.log('Registration successful, user ID:', user.user_id);
       console.log('Registration successful, returning response');
       res.status(201).json({
         message: 'User registered successfully',
@@ -193,7 +314,7 @@ router.post('/register', async (req, res, next) => {
           user_id: user.user_id,
           email: user.email,
           full_name: user.full_name,
-          isowner: user.isowner // Will be '1' or '0'
+          isowner: user.isowner
         },
         session: req.session ? {
           userId: user.user_id,
@@ -202,7 +323,6 @@ router.post('/register', async (req, res, next) => {
         } : undefined
       });
     } catch (dbError) {
-      // If DB creation fails, delete the Supabase user
       console.error('Database error during registration:', dbError);
       console.error('Error details:', dbError.stack);
       console.error('Prisma error code:', dbError.code);
@@ -252,15 +372,13 @@ router.post('/login', async (req, res, next) => {
     // Validate input
     if (!email || !password) {
       throw new ValidationError('Email and password are required');
-    }
-
-    // Step 1: First check if user exists in public_users
-    const publicUser = await prisma.public_users.findUnique({
+    }    // Step 1: First check if user exists in users table
+    const publicUser = await prisma.users.findUnique({
       where: { email }
     });
 
     if (!publicUser) {
-      console.log('User not found in public_users database');
+      console.log('User not found in users database');
       throw new ValidationError('Invalid credentials');
     }
 
@@ -337,12 +455,10 @@ router.post('/sync-session', async (req, res) => {
       }
 
       // Get user from database using the subject (user ID)
-      console.log(`Looking up user with ID: ${decoded.sub}`);
-      const user = await prisma.public_users.findFirst({
+      console.log(`Looking up user with ID: ${decoded.sub}`);      const user = await prisma.users.findFirst({
         where: {
           OR: [
             { user_id: decoded.sub },
-            { auth_user_id: decoded.sub },
             { email: decoded.email }
           ]
         },

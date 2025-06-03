@@ -490,7 +490,12 @@ router.post('/register', validate(registerUserSchema), async (req, res) => {
       });
     }
 
-    const { email, password, full_name, is_seller = false } = req.body;
+    // Log the raw request body for debugging
+    console.log('Raw request body:', req.body);
+
+    const { email, password, full_name } = req.body;
+    // Don't destructure is_seller with a default value
+    const is_seller = req.body.is_seller;
     console.log(`Attempting to register user: ${email}`);
     
     // Step 1: Check if user already exists in the public users table first
@@ -557,26 +562,61 @@ router.post('/register', validate(registerUserSchema), async (req, res) => {
     // Step 3: Create user in our database if we have Supabase user data
     if (authUser?.user) {
       try {
-        // Create new user in public.users table
-        const newUser = await prisma.users.create({
-          data: {
-            email,
-            full_name,
-            isowner: is_seller ? '1' : '0',
-            verified: 'yes',
-            created_at: new Date(),
-            updated_at: new Date(),
-            password_hash: 'supabase_managed' // Add password_hash field with default value
+        console.log('Raw request body:', req.body);
+
+        // Convert is_seller to a normalized format
+        let isOwner = false;
+        const is_seller_val = req.body.is_seller;
+
+        // Handle all possible formats that could mean "true"
+        if (is_seller_val === true || 
+            is_seller_val === 1 ||
+            is_seller_val === '1' ||
+            is_seller_val === 'true' ||
+            is_seller_val === 'yes') {
+          isOwner = true;
+        }
+
+        console.log('Owner status determination:', {
+          raw_is_seller_val: is_seller_val,
+          typeof_is_seller: typeof is_seller_val,
+          isOwner: isOwner
+        });
+          // Create user and owner record in a single transaction
+        const newUser = await prisma.$transaction(async (prisma) => {
+          console.log('Creating user with owner status:', isOwner);
+          
+          const user = await prisma.users.create({
+            data: {
+              email,
+              full_name,
+              isowner: isOwner ? '1' : '0',
+              verified: 'yes',
+              created_at: new Date(),
+              updated_at: new Date()
+            }
+          });
+
+          console.log('Created user with data:', user);
+
+          if (isOwner) {
+            const license = req.body.license || 'none';
+            console.log('Creating owner record with:', { userId: user.user_id, license });
+            await prisma.owner.create({
+              data: {
+                owner_id: user.user_id,
+                license: license
+              }
+            });
+            console.log(`Created owner record for user: ${user.user_id}`);
+          } else {
+            console.log('Not creating owner record since isOwner is false');
           }
+
+          return user;
         });
         
-        console.log(`Created new user in database with ID: ${newUser.user_id}`);
-        
-        // If isowner is '1', create an owner record
-        if (newUser.isowner === '1') {
-          const license = req.body.license || 'none';
-          await createOwnerIfNeeded(newUser.user_id, license);
-        }
+        console.log(`User processed successfully with ID: ${newUser.user_id}, owner status: ${newUser.isowner}`);
         
         // Generate JWT token for authentication
         const token = jwt.sign(
@@ -1008,6 +1048,16 @@ router.post('/sync-session', async (req, res) => {
     console.error('Session sync error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+// Handle preflight requests for all auth routes
+router.options('*', (req, res) => {
+    // Send response headers
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.status(200).send();
 });
 
 // Helper function for registration error handling

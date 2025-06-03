@@ -6,13 +6,115 @@ const prisma = require('../../../config/database').prisma;
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const EmailService = require('../../shared/services/email.service');
 
-// Apply authentication middleware to all routes except success
-router.use((req, res, next) => {
-  if (req.path === '/success') {
-    return next();
+// Define success route first to bypass authentication
+router.get('/success', async (req, res) => {
+  try {
+    const { session_id } = req.query;
+    
+    if (!session_id) {
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    // Retrieve the session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    // Get the booking details from the session metadata
+    const {
+      camper_id,
+      user_id,
+      start_date,
+      end_date,
+      number_of_guests,
+      cost,
+      service_fee,
+      total
+    } = session.metadata;
+
+    // Validate required fields
+    if (!camper_id || !user_id || !start_date || !end_date || !number_of_guests || !cost || !total) {
+      console.error('Missing required fields in session metadata:', session.metadata);
+      return res.status(400).json({ error: 'Invalid session data' });
+    }
+
+    // Create the booking in the database
+    const booking = await prisma.bookings.create({
+      data: {
+        start_date: new Date(start_date),
+        end_date: new Date(end_date),
+        number_of_guests: parseInt(number_of_guests),
+        cost: parseFloat(cost),
+        created_at: new Date(),
+        camping_spot: { connect: { camping_spot_id: parseInt(camper_id) } },
+        users: { connect: { user_id: parseInt(user_id) } },
+        status_booking_transaction: { connect: { status_id: 2 } } // Status 2 = Confirmed
+      },
+      include: {
+        camping_spot: true,
+        users: true
+      }
+    });
+
+    // Create the transaction record
+    const transaction = await prisma.transaction.create({
+      data: {
+        amount: parseFloat(total),
+        bookings: { connect: { booking_id: booking.booking_id } },
+        status_booking_transaction: { connect: { status_id: 2 } }
+      }
+    });
+
+    try {
+      // Get the full user record for sending email
+      const user = await prisma.users.findUnique({
+        where: { user_id: parseInt(user_id) }
+      });
+      
+      if (user) {
+        await EmailService.sendBookingConfirmation(booking, user);
+        console.log(`Sent confirmation email for booking ${booking.booking_id} to ${user.email}`);
+      } else {
+        console.warn(`User not found for booking confirmation email: ${user_id}`);
+      }
+    } catch (emailError) {
+      console.error('Failed to send booking confirmation email:', emailError);
+      // Don't fail the booking if email fails
+    }
+
+    res.json({
+      success: true,
+      booking: {
+        id: booking.booking_id,
+        start_date: booking.start_date,
+        end_date: booking.end_date,
+        number_of_guests: booking.number_of_guests,
+        cost: booking.cost,
+        total: transaction.amount,
+        status: 'Confirmed',
+        spot: {
+          id: booking.camping_spot.camping_spot_id,
+          title: booking.camping_spot.title,
+          location: booking.camping_spot?.location
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error processing successful payment:', error);
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'Booking already exists' });
+    }
+    if (error.code === 'P2025') {
+      return res.status(404).json({ error: 'Camping spot or user not found' });
+    }
+    res.status(500).json({ error: 'Failed to process payment' });
   }
-  authenticate(req, res, next);
 });
+
+// Apply authentication middleware to all other routes
+router.use(authenticate);
 
 // Get bookings for the currently logged in user
 router.get('/user', async (req, res) => {
@@ -202,10 +304,17 @@ router.get('/user', async (req, res) => {
 
 // Get a single booking
 router.get('/:id', async (req, res) => {
-  try {
+  try {    if (!req.user?.email) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
     const user = await prisma.users.findUnique({
       where: { email: req.user.email }
     });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
     const booking = await prisma.bookings.findUnique({
       where: { booking_id: parseInt(req.params.id) },

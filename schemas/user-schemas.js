@@ -10,7 +10,12 @@ const registerUserSchema = z.object({
   }),
   full_name: z.string().min(2, {
     message: "Full name must be at least 2 characters"
-  })
+  }),
+  is_seller: z.union([z.string(), z.boolean(), z.number(), z.enum(['0', '1', 'true', 'false'])]).optional().transform(val => {
+    if (val === '1' || val === 1 || val === true || val === 'true') return true;
+    return false;
+  }),
+  license: z.string().optional().nullable()
 });
 
 // Schema for user login

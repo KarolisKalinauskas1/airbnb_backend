@@ -8,7 +8,7 @@ const { prisma, ensureConnection } = require('../config/prisma');
 const routeAccessMiddleware = require('./middleware/route-access.js');
 
 // Import routes
-const authRoutes = require('./features/auth/routes');
+const authRoutes = require('../routes/auth');
 const userRoutes = require('./features/users/routes');
 const campingSpotsRoutes = require('./features/camping/routes');
 const bookingRoutes = require('./features/bookings');
@@ -29,6 +29,32 @@ const app = express();
 
 // Basic middleware setup
 app.use(logger('dev'));
+
+// Unified CORS configuration
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    const allowedOrigins = [
+        'http://localhost:5173',  // Vite dev server
+        'http://localhost:3000',  // Backend server
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:3000'
+    ];
+    
+    if (allowedOrigins.includes(origin)) {
+        res.header('Access-Control-Allow-Origin', origin);
+        res.header('Access-Control-Allow-Credentials', 'true');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Public-Route, X-CSRF-Token');
+        res.header('Access-Control-Expose-Headers', 'Content-Type, Authorization');
+        res.header('Vary', 'Origin');
+
+        if (req.method === 'OPTIONS') {
+            res.header('Access-Control-Max-Age', '86400');
+            return res.status(204).end();
+        }
+    }
+    next();
+});
 
 // Ensure database connection middleware
 app.use(async (req, res, next) => {
@@ -55,23 +81,6 @@ app.use(helmet({
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
-
-// Basic CORS handling for all routes
-app.use((req, res, next) => {
-    // Set basic CORS headers for all requests
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, X-Public-Route');
-    res.header('Access-Control-Expose-Headers', 'Content-Type, Authorization');
-    
-    // Set 204 for preflight
-    if (req.method === 'OPTIONS') {
-        res.header('Access-Control-Max-Age', '86400');
-        return res.status(204).end();
-    }
-
-    next();
-});
 
 // Ensure proper headers for all responses
 app.use((req, res, next) => {
