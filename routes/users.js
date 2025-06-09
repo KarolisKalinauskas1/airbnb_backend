@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const { authenticate, authRateLimiter } = require('../src/middleware/auth');
+const { authenticate, authRateLimiter } = require('../middlewares/auth');
 const { adminClient } = require('../config/supabase');
 
 // Helper function to find user by id (handles both numeric and UUID formats)

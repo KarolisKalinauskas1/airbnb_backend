@@ -8,11 +8,11 @@ const { prisma, ensureConnection } = require('../config/prisma');
 const routeAccessMiddleware = require('./middleware/route-access.js');
 
 // Import routes
-const authRoutes = require('../routes/auth');
+const authRoutes = require('./routes/auth');
 const userRoutes = require('./features/users/routes');
 const campingSpotsRoutes = require('./features/camping/routes');
 const bookingRoutes = require('./features/bookings');
-const reviewRoutes = require('./features/reviews/routes');
+const reviewRoutes = require('./routes/reviews');
 const dashboardRoutes = require('./features/dashboard/routes');
 const geocodingRoutes = require('../routes/geocoding');
 const amenitiesRoutes = require('../routes/amenities');
@@ -26,6 +26,12 @@ const session = require('express-session');
 
 // Create Express app
 const app = express();
+
+// Debug: Log all incoming requests
+app.use((req, res, next) => {
+  console.log('[APP DEBUG] Incoming request:', req.method, req.url, req.path);
+  next();
+});
 
 // Basic middleware setup
 app.use(logger('dev'));
@@ -169,14 +175,26 @@ app.get(['/api/countries', '/api/camping-spots/countries'], async (req, res) => 
 app.use('/api/camping-spots', campingSpotsRoutes);
 
 // Authentication routes - these handle their own auth
+console.log('[APP DEBUG] Mounting route /api/auth');
 app.use('/api/auth', authRoutes);
 
 // Protected routes - require authentication
+console.log('[APP DEBUG] Mounting route /api/users');
 app.use('/api/users', authenticate, userRoutes);
+console.log('[APP DEBUG] Mounting route /api/bookings');
 app.use('/api/bookings', bookingRoutes); // Authentication handled within route
+console.log('[APP DEBUG] Mounting route /api/checkout');
 app.use('/api/checkout', authenticate, require('./routes/checkout'));
-app.use('/api/reviews', authenticate, reviewRoutes);
-app.use('/api/dashboard', authenticate, dashboardRoutes);
+console.log('[APP DEBUG] Mounting route /api/reviews');
+app.use('/api/reviews', reviewRoutes);
+console.log('[APP DEBUG] Mounting route /api/dashboard');
+app.use('/api/dashboard', dashboardRoutes); // Authentication handled within routes
+
+// Debug routes (only in development)
+if (process.env.NODE_ENV === 'development') {
+    const debugRoutes = require('../routes/debug');
+    app.use('/api/debug', debugRoutes);
+}
 
 // A simple error handler for 404s
 app.use((req, res, next) => {

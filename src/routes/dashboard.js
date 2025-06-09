@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const prisma = require('../config/prisma');
-const { authenticate } = require('../middleware/auth');
+const { prisma } = require('../config/index');
+const { authenticate } = require('../../middlewares/auth');
 const dashboardFeatures = require('../features/dashboard/routes');
 
 // Use the features module routes

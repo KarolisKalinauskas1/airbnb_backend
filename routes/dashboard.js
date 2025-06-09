@@ -2,8 +2,18 @@ const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
-const { authenticate } = require('../src/middleware/auth');
+const { authenticate } = require('../middlewares/auth');
 const dashboardFeatures = require('../src/features/dashboard/routes');
+
+// Add request logging
+router.use((req, res, next) => {
+  console.log(`[DASHBOARD] ${req.method} ${req.path} - Headers:`, {
+    authorization: req.headers.authorization ? 'Bearer token present' : 'No auth header',
+    origin: req.headers.origin,
+    userAgent: req.headers['user-agent']?.substring(0, 50)
+  });
+  next();
+});
 
 // Use the features module routes
 router.use('/', dashboardFeatures);

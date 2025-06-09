@@ -144,11 +144,14 @@ function onListening() {
 }
 
 // Schedule the booking completion check to run daily at midnight
+console.log('[CRON] Scheduling booking completion check for daily at midnight (0 0 * * *)');
 cron.schedule('0 0 * * *', async () => {
+  console.log('[CRON] Running scheduled booking completion check at:', new Date().toISOString());
   try {
     await BookingCompletionService.processCompletedBookings();
+    console.log('[CRON] Booking completion check completed successfully');
   } catch (error) {
-    console.error('Error processing completed bookings:', error);
+    console.error('[CRON] Error processing completed bookings:', error);
   }
 });
 
@@ -182,13 +185,24 @@ cron.schedule('0 1 * * *', async () => {
 });
 
 // Schedule review request emails to run daily at 11:00 AM
+console.log('[CRON] Scheduling review request emails for daily at 11:00 AM (0 11 * * *)');
 cron.schedule('0 11 * * *', async () => {
+  console.log('[CRON] Running scheduled review request emails at:', new Date().toISOString());
   try {
     await BookingReviewService.sendReviewRequestEmails();
+    console.log('[CRON] Review request emails completed successfully');
   } catch (error) {
-    console.error('Error sending review request emails:', error);
+    console.error('[CRON] Error sending review request emails:', error);
   }
 });
+
+// Test cron job to verify cron system is working (runs every minute in development)
+if (process.env.NODE_ENV === 'development') {
+  console.log('[CRON] Scheduling test cron job for every minute (* * * * *)');
+  cron.schedule('* * * * *', () => {
+    console.log('[CRON-TEST] Test cron job executed at:', new Date().toISOString());
+  });
+}
 
 function startServer() {
   server.listen(port, process.env.HOST || 'localhost', () => {

@@ -200,7 +200,7 @@ router.get('/', async (req, res) => {
           include: { amenity: true }
         },
         bookings: {
-          where: { status_id: { not: 5 } },
+          where: { status_id: { in: [1, 2] } }, // Only show pending and confirmed bookings
           select: {
             booking_id: true,
             start_date: true,
@@ -266,7 +266,7 @@ router.get('/search', async (req, res) => {
             AND: [
               { start_date: { lte: new Date(endDate) } },
               { end_date: { gte: new Date(startDate) } },
-              { status_id: { not: 5 } } // Exclude cancelled bookings
+              { status_id: { in: [2, 5] } } // Exclude confirmed and unavailable bookings
             ]
           }
         }
@@ -286,7 +286,7 @@ router.get('/search', async (req, res) => {
           include: { amenity: true }
         },
         bookings: {
-          where: { status_id: { not: 5 } },
+          where: { status_id: { in: [1, 2] } }, // Only show pending and confirmed bookings
           select: {
             booking_id: true,
             start_date: true,
@@ -385,7 +385,7 @@ router.get('/search', async (req, res) => {
             AND: [
               { start_date: { lte: new Date(endDate) } },
               { end_date: { gte: new Date(startDate) } },
-              { status_id: { not: 5 } } // Exclude cancelled bookings
+              { status_id: { in: [2, 5] } } // Exclude confirmed and unavailable bookings
             ]
           }
         }
@@ -405,7 +405,7 @@ router.get('/search', async (req, res) => {
           include: { amenity: true }
         },
         bookings: {
-          where: { status_id: { not: 5 } },
+          where: { status_id: { in: [1, 2] } }, // Only show pending and confirmed bookings
           select: {
             booking_id: true,
             start_date: true,
@@ -481,9 +481,8 @@ router.get('/:id', async (req, res) => {
         images: true,
         camping_spot_amenities: {
           include: { amenity: true }
-        },
-        bookings: {
-          where: { status_id: { not: 5 } }, // Exclude cancelled bookings
+        },        bookings: {
+          where: { status_id: { in: [1, 2] } }, // Only show pending and confirmed bookings
           select: {
             booking_id: true,
             start_date: true,
@@ -876,9 +875,7 @@ router.get('/:id/availability', async (req, res) => {
 // Check price suggestions for a specific camping spot - public endpoint
 router.get('/:id/price-suggestion', async (req, res) => {
   try {
-    const spotId = parseInt(req.params.id);
-
-    // Get the camping spot
+    const spotId = parseInt(req.params.id);    // Get the camping spot
     const spot = await prisma.camping_spot.findUnique({
       where: { camping_spot_id: spotId },
       include: {
@@ -887,7 +884,7 @@ router.get('/:id/price-suggestion', async (req, res) => {
         },
         location: true,
         bookings: {
-          where: { status_id: { not: 5 } } // Exclude cancelled bookings
+          where: { status_id: { in: [1, 2] } } // Only show pending and confirmed bookings
         }
       }
     });
@@ -1380,7 +1377,7 @@ router.get('/search', async (req, res) => {
             AND: [
               { start_date: { lte: new Date(endDate) } },
               { end_date: { gte: new Date(startDate) } },
-              { status_id: { not: 5 } } // Exclude cancelled bookings
+              { status_id: { in: [2, 5] } } // Exclude confirmed and unavailable bookings
             ]
           }
         }
@@ -1400,7 +1397,7 @@ router.get('/search', async (req, res) => {
           include: { amenity: true }
         },
         bookings: {
-          where: { status_id: { not: 5 } },
+          where: { status_id: { in: [1, 2] } }, // Only show pending and confirmed bookings
           select: {
             booking_id: true,
             start_date: true,

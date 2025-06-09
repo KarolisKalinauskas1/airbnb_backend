@@ -6,7 +6,7 @@ const { geocodeAddress, calculateDistance } = require('../utils/geocoding');
 const cloudinary = require('../utils/cloudinary');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
-const { authenticate, optionalAuthenticate } = require('../middleware/auth');
+const { authenticate, optionalAuthenticate } = require('../middlewares/auth');
 const validate = require('../middlewares/validate');
 const { cacheMiddleware, clearCache } = require('../middlewares/cache-middleware');
 const camperSchemas = require('../schemas/camper-schemas');
@@ -57,10 +57,9 @@ router.get('/', optionalAuthenticate, async (req, res) => {
           include: { country: true }
         },
         camping_spot_amenities: {
-          include: { amenity: true }
-        },
+          include: { amenity: true }        },
         bookings: {
-          where: { status_id: { not: 5 } } // Exclude blocked dates
+          where: { status_id: { in: [1, 2] } } // Only show pending and confirmed bookings
         }
       }
     };

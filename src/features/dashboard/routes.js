@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../../middleware/auth');
+const { authenticate } = require('../../../middlewares/auth');
 const analyticsRouter = require('./analytics');
 
 router.use('/analytics', authenticate, analyticsRouter);
+
+// Apply authentication to all other dashboard routes
+router.use(authenticate);
 
 /**
  * Ensure a value is a proper number
@@ -453,7 +456,7 @@ router.get('/spots', async (req, res) => {
 });
 
 // Get bookings for owner's spots
-router.get('/bookings', authenticate, async (req, res) => {
+router.get('/bookings', async (req, res) => {
   try {
     // Check owner status using normalized user object
     const isOwner = ['1', 1, true, 'true', 'yes', 'YES'].includes(req.user.isowner) || 

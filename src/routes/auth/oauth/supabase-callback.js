@@ -28,17 +28,11 @@ router.post('/google/supabase-callback', async (req, res) => {
         error: 'Missing required data', 
         details: 'User ID and email are required' 
       });
-    }
-
-    console.log(`Processing Supabase OAuth data for: ${email}`);
-    
-    // Check if user exists in our database first by email, then by auth_user_id
-    let user = await prisma.public_users.findFirst({
+    }    console.log(`Processing Supabase OAuth data for: ${email}`);
+      // Check if user exists in our database by email (email is unique)
+    let user = await prisma.users.findFirst({
       where: {
-        OR: [
-          { email: email },
-          { auth_user_id: supabase_id }
-        ]
+        email: email
       }
     });
 
@@ -47,14 +41,10 @@ router.post('/google/supabase-callback', async (req, res) => {
     // If user doesn't exist in our database, create them
     if (!user) {
       console.log(`New user via Supabase OAuth: ${email}`);
-      isNewUser = true;
-      
-      user = await prisma.public_users.create({
+      isNewUser = true;        user = await prisma.users.create({
         data: {
           email,
           full_name: full_name || email.split('@')[0],
-          auth_user_id: supabase_id,  // Make sure to store this
-          profile_image: avatar_url || null,
           isowner: '0',
           verified: 'yes',
           created_at: new Date(),
@@ -68,28 +58,15 @@ router.post('/google/supabase-callback', async (req, res) => {
       } catch (emailError) {
         console.error('Failed to send welcome email:', emailError);
         // Don't fail the registration if email fails
-      }
-    } 
-    // Update existing user if needed
-    else if (!user.auth_user_id || user.auth_user_id !== supabase_id) {
-      // Update auth_user_id if missing or different
-      user = await prisma.public_users.update({
+      }    } 
+    // Update existing user's last login time
+    else {
+      user = await prisma.users.update({
         where: { user_id: user.user_id },
         data: { 
-          auth_user_id: supabase_id,
-          profile_image: avatar_url || user.profile_image,
           updated_at: new Date()
         }
       });
-    } else if (avatar_url && !user.profile_image) {
-      await prisma.public_users.update({
-        where: { user_id: user.user_id },
-        data: { 
-          profile_image: avatar_url,
-          updated_at: new Date()
-        }
-      });
-      user.profile_image = avatar_url;
     }
 
     // Generate JWT token for our API

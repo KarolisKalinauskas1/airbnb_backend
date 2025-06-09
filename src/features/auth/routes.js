@@ -425,14 +425,15 @@ router.post('/logout', async (req, res) => {
     // Sign out from Supabase with the specific session if we have a refresh token
     if (refreshToken) {
       const { error } = await adminClient.auth.signOut({
-        refresh_token: refreshToken
+        refresh_token: refreshToken,
+        scope: 'global'
       });
       if (error) {
         console.warn('Supabase signout error:', error);
       }
     } else {
       // Global signout if no specific session
-      const { error } = await adminClient.auth.signOut();
+      const { error } = await adminClient.auth.signOut({ scope: 'global' });
       if (error) {
         console.warn('Supabase global signout error:', error);
       }
@@ -493,6 +494,86 @@ router.post('/logout', async (req, res) => {
     res.status(200).json({ 
       message: 'Logged out successfully',
       warning: 'Some cleanup operations may have failed'
+    });
+  }
+});
+
+/**
+ * Sync user from Supabase to database
+ */
+router.post('/sync-user', async (req, res) => {
+  try {
+    console.log('User sync request received');
+    
+    // Get token from authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No valid authorization token provided' });
+    }
+    
+    const token = authHeader.substring(7);
+    
+    // Verify token with Supabase
+    const { data: userData, error: verifyError } = await adminClient.auth.getUser(token);
+    
+    if (verifyError || !userData.user) {
+      console.error('Token verification failed:', verifyError);
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    
+    const supabaseUser = userData.user;
+    
+    // Check if user already exists in database
+    const existingUser = await prisma.users.findUnique({
+      where: { email: supabaseUser.email }
+    });
+    
+    if (existingUser) {
+      console.log('User already exists in database:', existingUser.user_id);
+      return res.json({
+        success: true,
+        message: 'User already synchronized',
+        user: existingUser
+      });
+    }
+    
+    // Create user in database
+    const newUser = await prisma.users.create({
+      data: {
+        email: supabaseUser.email,
+        full_name: supabaseUser.user_metadata?.full_name || 
+                  supabaseUser.raw_user_meta_data?.full_name || 
+                  supabaseUser.email.split('@')[0],
+        isowner: Number(supabaseUser.user_metadata?.isowner || 
+                       supabaseUser.raw_user_meta_data?.isowner || 0),
+        verified: 'yes',
+        created_at: new Date(),
+        updated_at: new Date()
+      }
+    });
+    
+    console.log('Successfully created user in database:', newUser.user_id);
+    
+    res.json({
+      success: true,
+      message: 'User synchronized successfully',
+      user: newUser
+    });
+    
+  } catch (error) {
+    console.error('User sync error:', error);
+    
+    if (error.code === 'P2002') {
+      // Unique constraint violation - user was created by another request
+      return res.json({
+        success: true,
+        message: 'User was synchronized by another process'
+      });
+    }
+    
+    res.status(500).json({
+      error: 'Failed to sync user',
+      message: error.message
     });
   }
 });

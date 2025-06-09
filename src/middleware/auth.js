@@ -184,22 +184,74 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    // Verify token
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (error) {
-      if (error.status === 401) {
-        return res.status(401).json({ 
-          error: 'Token expired or invalid',
-          message: 'Please log in again'
-        });
+    console.log('Auth header received: Bearer token present');
+
+    let dbUser = null;
+    let authError = null;
+
+    // Try Supabase first
+    try {
+      console.log('Attempting to verify token with Supabase...');
+      const { data: { user }, error } = await supabase.auth.getUser(token);
+      
+      if (error) {
+        console.log('Supabase token verification error:', error);
+        throw error;
       }
-      throw error;
+
+      if (!user) {
+        throw new Error('Invalid token - no user returned from Supabase');
+      }
+
+      // Get or create user in our database
+      dbUser = await getOrCreateUser(user);
+      if (dbUser) {
+        console.log('Successfully authenticated via Supabase:', dbUser.email);
+      }
+    } catch (supabaseError) {
+      console.log('Supabase authentication failed:', supabaseError);
+      authError = supabaseError;
+      
+      // Fall back to JWT verification
+      try {
+        console.log('Attempting application JWT verification...');
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        
+        if (!decoded?.email) {
+          throw new Error('No email in JWT payload');
+        }
+
+        dbUser = await prisma.users.findUnique({
+          where: { email: decoded.email },
+          select: {
+            user_id: true,
+            email: true,
+            full_name: true,
+            isowner: true,
+            verified: true
+          }
+        });
+
+        if (dbUser) {
+          console.log('Successfully authenticated via JWT:', dbUser.email);
+        } else {
+          throw new Error('User not found in database after JWT verification');
+        }
+      } catch (jwtError) {
+        console.log('JWT authentication failed:', jwtError.message);
+        // Only use jwtError if we don't already have an error from Supabase
+        if (!authError) authError = jwtError;
+      }
     }
 
-    // Get or create user in our database
-    const dbUser = await getOrCreateUser(user);
+    // If we still don't have a user, authentication has failed
     if (!dbUser) {
-      return res.status(401).json({ error: 'User not found in database' });
+      const errorMessage = authError?.message || 'Authentication failed';
+      console.error('Authentication failed completely:', errorMessage);
+      return res.status(401).json({ 
+        error: 'Authentication failed',
+        message: errorMessage
+      });
     }
 
     // Attach user to request

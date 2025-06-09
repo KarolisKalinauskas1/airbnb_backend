@@ -227,10 +227,9 @@ router.post('/signout', async (req, res) => {
       if (isConfigured && adminClient) {
         // Get the refresh token if provided
         const { refresh_token } = req.body;
-        
-        if (refresh_token) {
-          // Sign out specific session
-          adminClient.auth.signOut({ refresh_token }).catch(error => {
+          if (refresh_token) {
+          // Sign out specific session with global scope
+          adminClient.auth.signOut({ refresh_token, scope: 'global' }).catch(error => {
             console.warn('Failed to sign out from Supabase:', error);
           });
         }

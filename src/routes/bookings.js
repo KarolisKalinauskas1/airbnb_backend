@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate } = require('../middleware/auth');
+const { authenticate } = require('../../middlewares/auth');
 const prisma = require('../config/prisma');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const EmailService = require('../shared/services/email.service');

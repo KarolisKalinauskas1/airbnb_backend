@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const prisma = require('../../config/prisma');
-const { authenticate } = require('../../middleware/auth');
+const { prisma } = require('../../config/index');
+const { authenticate } = require('../../../middlewares/auth');
 
 /**
  * Ensure a value is a proper number
@@ -147,7 +147,7 @@ function generateEmptyAnalytics() {
   };
 }
 
-router.get('/analytics', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     // Validate user and owner access
     const access = await ownerAccessCheck(req);
@@ -159,7 +159,7 @@ router.get('/analytics', authenticate, async (req, res) => {
     }
 
     // Get all camping spots for this owner with complete data
-    const spotStats = await prisma.camping_spots.findMany({
+    const spotStats = await prisma.camping_spot.findMany({
       where: { 
         owner_id: access.userId 
       },

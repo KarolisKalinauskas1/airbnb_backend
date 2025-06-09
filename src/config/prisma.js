@@ -35,5 +35,15 @@ process.on('SIGTERM', async () => {
   process.exit();
 });
 
-// Export the Prisma instance
-module.exports = prisma;
+// Export the Prisma instance and connection helper
+async function ensureConnection() {
+  try {
+    await prisma.$connect();
+    return true;
+  } catch (error) {
+    console.error('Failed to connect to database:', error);
+    throw error;
+  }
+}
+
+module.exports = { prisma, ensureConnection };
