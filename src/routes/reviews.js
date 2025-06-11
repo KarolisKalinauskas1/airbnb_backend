@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../../middlewares/auth');
-const prisma = require('../config/prisma');
+const { prisma } = require('../../config/prisma');
 
 console.log('[REVIEWS ROUTES] Loading reviews routes...');
+console.log('[REVIEWS ROUTES] Prisma available:', !!prisma);
 
 // Debug: Log all routes being registered
 router.use((req, res, next) => {
@@ -125,10 +126,16 @@ router.get('/:id', async (req, res) => {
 });
 
 // Get review by booking ID - this is what the frontend expects when checking for existing reviews
-router.get('/booking/:id', async (req, res) => {
+router.get('/booking/:id', authenticate, async (req, res) => {
   try {
     const bookingId = parseInt(req.params.id);
     console.log('[REVIEW GET BY BOOKING] Request received for booking ID:', bookingId);
+    console.log('[REVIEW GET BY BOOKING] User:', req.user);
+
+    if (isNaN(bookingId)) {
+      console.log('[REVIEW GET BY BOOKING] ERROR: Invalid booking ID');
+      return res.status(400).json({ error: 'Invalid booking ID' });
+    }
 
     // Check if the booking exists and belongs to the user
     const booking = await prisma.bookings.findUnique({
@@ -137,12 +144,20 @@ router.get('/booking/:id', async (req, res) => {
       }
     });
 
+    console.log('[REVIEW GET BY BOOKING] Booking found:', {
+      exists: !!booking,
+      booking_user_id: booking?.user_id,
+      current_user_id: req.user?.user_id
+    });
+
     if (!booking) {
+      console.log('[REVIEW GET BY BOOKING] ERROR: Booking not found');
       return res.status(404).json({ error: 'Booking not found' });
     }
 
     // Verify the user is the owner of the booking
     if (booking.user_id !== req.user.user_id) {
+      console.log('[REVIEW GET BY BOOKING] ERROR: User mismatch');
       return res.status(403).json({ error: 'You can only view reviews for your own bookings' });
     }
 
@@ -153,20 +168,26 @@ router.get('/booking/:id', async (req, res) => {
       }
     });
 
+    console.log('[REVIEW GET BY BOOKING] Review search result:', {
+      exists: !!existingReview,
+      review_id: existingReview?.review_id
+    });
+
     if (!existingReview) {
+      console.log('[REVIEW GET BY BOOKING] No review found - returning 404');
       return res.status(404).json({ error: 'No review found for this booking' });
     }
 
     console.log('[REVIEW GET BY BOOKING] Found existing review:', existingReview);
     res.json(existingReview);
   } catch (error) {
-    console.error('[REVIEW GET BY BOOKING] Error:', error);
+    console.error('[REVIEW GET BY BOOKING] ERROR:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // Create a new review for a specific booking - this is what the frontend expects
-router.post('/booking/:id', async (req, res) => {
+router.post('/booking/:id', authenticate, async (req, res) => {
   try {
     const bookingId = parseInt(req.params.id);
     console.log('[REVIEW CREATE BY BOOKING] Request received:', {
@@ -243,7 +264,7 @@ router.post('/booking/:id', async (req, res) => {
 });
 
 // Create a new review (alternative endpoint)
-router.post('/', async (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   try {
     console.log('[REVIEW CREATE] Request received:', {
       body: req.body,
@@ -260,8 +281,7 @@ router.post('/', async (req, res) => {
       console.log('[REVIEW CREATE] ERROR: Missing booking_id');
       return res.status(400).json({ error: 'Booking ID is required' });
     }
-    
-    if (!rating || rating < 1 || rating > 5) {
+      if (!rating || rating < 1 || rating > 5) {
       console.log('[REVIEW CREATE] ERROR: Invalid rating:', rating);
       return res.status(400).json({ error: 'Valid rating (1-5) is required' });
     }
@@ -276,19 +296,37 @@ router.post('/', async (req, res) => {
       }
     });
 
+    console.log('[REVIEW CREATE] Booking lookup result:', {
+      found: !!booking,
+      booking_id: booking_id,
+      booking_user_id: booking?.user_id,
+      current_user_id: req.user.user_id,
+      end_date: booking?.end_date,
+      status_id: booking?.status_id
+    });
+
     if (!booking) {
+      console.log('[REVIEW CREATE] ERROR: Booking not found');
       return res.status(404).json({ error: 'Booking not found' });
     }
 
     // Verify the user is the owner of the booking
     if (booking.user_id !== req.user.user_id) {
+      console.log('[REVIEW CREATE] ERROR: User mismatch - booking belongs to user', booking.user_id, 'but request from user', req.user.user_id);
       return res.status(403).json({ error: 'You can only review your own bookings' });
     }
 
     // Check if the booking is completed (end date is in the past)
     const endDate = new Date(booking.end_date);
     const now = new Date();
+    console.log('[REVIEW CREATE] Date check:', {
+      end_date: endDate.toISOString(),
+      current_date: now.toISOString(),
+      is_past: endDate <= now
+    });
+    
     if (endDate > now) {
+      console.log('[REVIEW CREATE] ERROR: Booking not yet completed');
       return res.status(400).json({ error: 'You can only review completed bookings' });
     }
 
@@ -299,25 +337,36 @@ router.post('/', async (req, res) => {
       }
     });
 
-    if (existingReview) {
+    console.log('[REVIEW CREATE] Existing review check:', {
+      exists: !!existingReview,
+      review_id: existingReview?.review_id
+    });    if (existingReview) {
+      console.log('[REVIEW CREATE] ERROR: Review already exists');
       return res.status(400).json({ error: 'You have already reviewed this booking' });
     }
 
-    if (!booking) {
-      return res.status(403).json({ error: 'You can only review camping spots you have stayed at' });
-    }    const review = await prisma.review.create({
+    // Create the review
+    console.log('[REVIEW CREATE] Creating review with data:', {
+      booking_id: parseInt(booking_id),
+      user_id: req.user.user_id,
+      rating: parseInt(rating),
+      comment: comment || null
+    });
+
+    const review = await prisma.review.create({
       data: {
         booking_id: parseInt(booking_id),
         user_id: req.user.user_id,
         rating: parseInt(rating),
         comment: comment || null,
-        created_at: new Date()
-      }
+        created_at: new Date()      }
     });
 
+    console.log('[REVIEW CREATE] SUCCESS: Created review:', review);
     res.status(201).json(review);
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    console.error('[REVIEW CREATE] ERROR:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -380,11 +429,10 @@ router.delete('/:id', async (req, res) => {
 
     await prisma.review.delete({
       where: { id: parseInt(req.params.id) }
-    });
-
-    res.json({ message: 'Review deleted successfully' });
+    });    res.json({ message: 'Review deleted successfully' });
   } catch (error) {
-    res.status(400).json({ error: error.message });  }
+    res.status(500).json({ error: error.message });
+  }
 });
 
 module.exports = router;

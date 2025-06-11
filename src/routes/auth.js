@@ -217,8 +217,7 @@ router.post('/register', async (req, res, next) => {
       console.log('Creating user in public_users table...');
       
       // Create user with transaction to ensure both user and owner records are created
-      user = await prisma.$transaction(async (prisma) => {
-        // Create the user
+      user = await prisma.$transaction(async (prisma) => {        // Create the user
         const newUser = await prisma.users.create({
           data: {
             email,
@@ -226,8 +225,7 @@ router.post('/register', async (req, res, next) => {
             verified: 'no',
             isowner: isOwner ? '1' : '0', 
             created_at: new Date(),
-            updated_at: new Date(),
-            auth_user_id: data.user.id 
+            updated_at: new Date()
           }
         });
 
@@ -262,11 +260,9 @@ router.post('/register', async (req, res, next) => {
       
       // Set up session if available
       if (req.session) {
-        console.log('Setting up user session...');
-        req.session.userId = user.user_id;
+        console.log('Setting up user session...');        req.session.userId = user.user_id;
         req.session.email = user.email;
         req.session.isowner = user.isowner; 
-        req.session.auth_user_id = user.auth_user_id;
         console.log('Session created successfully');
       } else {
         console.log('Warning: Session object is not available');
@@ -426,14 +422,12 @@ router.post('/sync-session', async (req, res) => {
             { user_id: decoded.sub },
             { email: decoded.email }
           ]
-        },
-        select: {
+        },        select: {
           user_id: true,
           email: true,
           full_name: true,
           isowner: true,
-          verified: true,
-          auth_user_id: true
+          verified: true
         }
       });
 
@@ -443,11 +437,9 @@ router.post('/sync-session', async (req, res) => {
       }
 
       // Update session if it exists
-      if (req.session) {
-        req.session.userId = user.user_id;
+      if (req.session) {        req.session.userId = user.user_id;
         req.session.email = user.email;
         req.session.isowner = user.isowner;
-        req.session.auth_user_id = user.auth_user_id;
       }
 
       // Generate a new token if the current one is close to expiring
@@ -456,10 +448,9 @@ router.post('/sync-session', async (req, res) => {
       const refreshThreshold = 24 * 60 * 60 * 1000; // 24 hours
       
       let newToken = null;
-      if (tokenExp - now < refreshThreshold) {
-        newToken = jwt.sign(
+      if (tokenExp - now < refreshThreshold) {        newToken = jwt.sign(
           { 
-            sub: user.auth_user_id || user.user_id,
+            sub: user.user_id,
             email: user.email,
             name: user.full_name 
           },

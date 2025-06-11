@@ -322,11 +322,9 @@ async function getOrCreateUser(supabaseUser) {
 
   if (!user) {
     // Create new user if they don't exist
-    user = await prisma.users.create({
-      data: {
+    user = await prisma.users.create({      data: {
         email: supabaseUser.email,
         full_name: supabaseUser.user_metadata?.full_name || '',
-        auth_user_id: supabaseUser.id,
         isowner: false, // Default to false for new users
         verified: true  // If they authenticated with Supabase, they're verified
       },
@@ -336,21 +334,7 @@ async function getOrCreateUser(supabaseUser) {
         full_name: true,
         isowner: true,
         verified: true
-      }
-    });
-  } else if (!user.auth_user_id) {
-    // Update existing user with auth_user_id if it's missing
-    user = await prisma.users.update({
-      where: { user_id: user.user_id },
-      data: { auth_user_id: supabaseUser.id },
-      select: {
-        user_id: true,
-        email: true,
-        full_name: true,
-        isowner: true,
-        verified: true
-      }
-    });
+      }    });
   }
 
   return user;

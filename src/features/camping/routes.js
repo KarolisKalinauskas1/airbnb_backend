@@ -179,9 +179,13 @@ router.post('/', authenticate, upload.array('images'), async (req, res) => {
     });    res.status(201).json(transformImageUrls(completeSpot));
   } catch (error) {
     console.error('Error creating camping spot:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Request body:', req.body);
+    console.error('Request user:', req.user);
     res.status(500).json({ 
       error: 'Failed to create camping spot', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
@@ -854,8 +858,8 @@ router.get('/:id/availability', async (req, res) => {
             ]
           }
         ]
-      },
-      select: {
+      },      select: {
+        booking_id: true,
         start_date: true,
         end_date: true,
         status_id: true
@@ -1201,8 +1205,7 @@ router.post('/:id/availability', authenticate, async (req, res) => {
       bookingId: blockedBooking.booking_id
     });
 
-    res.status(201).json(blockedBooking);
-  } catch (error) {
+    res.status(201).json(blockedBooking);  } catch (error) {
     console.error('Error blocking dates:', {
       error: error.message,
       stack: error.stack,
@@ -1210,6 +1213,94 @@ router.post('/:id/availability', authenticate, async (req, res) => {
     });
     res.status(500).json({
       error: 'Failed to block dates',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Unblock dates for a camping spot - requires authentication and ownership
+router.delete('/:id/availability/:bookingId', authenticate, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const spotId = parseInt(req.params.id);
+    const bookingId = parseInt(req.params.bookingId);
+
+    console.log('Unblocking dates for spot:', spotId, 'booking:', bookingId);
+
+    // Validate parameters
+    if (isNaN(spotId) || isNaN(bookingId)) {
+      return res.status(400).json({
+        error: 'Invalid parameters',
+        message: 'Spot ID and booking ID must be valid numbers'
+      });
+    }
+
+    // Verify the spot exists and belongs to the user
+    const spot = await prisma.camping_spot.findUnique({
+      where: { camping_spot_id: spotId },
+      select: { owner_id: true }
+    });
+
+    if (!spot) {
+      return res.status(404).json({
+        error: 'Not found',
+        message: `Camping spot with ID ${spotId} not found`
+      });
+    }
+
+    if (spot.owner_id !== req.user.user_id) {
+      return res.status(403).json({
+        error: 'Forbidden',
+        message: 'You can only unblock dates for your own camping spots'
+      });
+    }
+
+    // Find the blocked booking
+    const blockedBooking = await prisma.bookings.findFirst({
+      where: {
+        booking_id: bookingId,
+        camping_spot: {
+          camping_spot_id: spotId
+        },
+        status_id: 5 // Only allow deletion of blocked dates (status_id = 5)
+      }
+    });
+
+    if (!blockedBooking) {
+      return res.status(404).json({
+        error: 'Not found',
+        message: 'Blocked booking not found or not owned by you'
+      });
+    }
+
+    // Delete the blocked booking
+    await prisma.bookings.delete({
+      where: { booking_id: bookingId }
+    });
+
+    console.log('Successfully unblocked dates:', {
+      spotId,
+      bookingId,
+      startDate: blockedBooking.start_date,
+      endDate: blockedBooking.end_date
+    });
+
+    res.json({ 
+      message: 'Dates unblocked successfully',
+      bookingId: bookingId
+    });
+
+  } catch (error) {
+    console.error('Error unblocking dates:', {
+      error: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({
+      error: 'Failed to unblock dates',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
